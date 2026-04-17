@@ -36,6 +36,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     },
     requestIdHeader: 'x-request-id',
     requestIdLogLabel: 'request_id',
+    // Our request-context middleware emits a single structured "request" log
+    // line per call with method, url, status, duration_ms. Disable Fastify's
+    // default incoming/completed pair so logs don't double up.
+    disableRequestLogging: true,
   });
 
   await app.register(multipart, {

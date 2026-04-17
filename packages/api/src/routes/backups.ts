@@ -4,6 +4,7 @@ import path from 'node:path';
 import { restoreConfirmZ } from '@sophie/shared';
 import { getDb } from '../db/sqlite.js';
 import { parseId } from '../util/params.js';
+import { parseMultipartForm } from '../util/multipart.js';
 import {
   createBackup,
   getBackupPath,
@@ -48,25 +49,18 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/v1/backups/upload-and-restore', async (req) => {
-    if (!req.isMultipart()) throw validation('multipart required');
-    let confirmed = false;
-    let tmpPath: string | null = null;
-    for await (const part of req.parts()) {
-      if (part.type === 'field') {
-        if (part.fieldname === 'confirm' && part.value === 'REPLACE ALL DATA') confirmed = true;
-      } else if (part.type === 'file') {
-        if (!confirmed) {
-          await part.toBuffer();
-          throw validation('confirm field must precede file');
-        }
-        const uploadDir = path.join(config.backupRoot, '.uploads');
-        fs.mkdirSync(uploadDir, { recursive: true });
-        tmpPath = path.join(uploadDir, `upload_${Date.now()}.tar.gz`);
-        const buf = await part.toBuffer();
-        fs.writeFileSync(tmpPath, buf);
-      }
+    const form = await parseMultipartForm(req, {
+      maxFileBytes: 2 * 1024 * 1024 * 1024, // 2 GB cap for backup archives
+      maxFiles: 1,
+    });
+    if (form.fields.confirm !== 'REPLACE ALL DATA') {
+      throw validation("confirm must be 'REPLACE ALL DATA'");
     }
-    if (!confirmed || !tmpPath) throw validation('missing confirm or file');
+    if (form.files.length !== 1) throw validation('exactly one file required');
+    const uploadDir = path.join(config.backupRoot, '.uploads');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const tmpPath = path.join(uploadDir, `upload_${Date.now()}.tar.gz`);
+    fs.writeFileSync(tmpPath, form.files[0]!.buffer);
     try {
       await restoreBackup(getDb(), tmpPath);
     } finally {

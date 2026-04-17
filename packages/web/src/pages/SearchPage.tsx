@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ItemWithDerived, PaginatedResponse } from '@sophie/shared';
-import { api } from '../api/client';
+import { endpoints, qk } from '../api/endpoints';
 import { ItemRow } from '../components/ItemRow';
 
 export function SearchPage() {
@@ -19,8 +19,11 @@ export function SearchPage() {
   }, [q]);
 
   const items = useQuery<PaginatedResponse<ItemWithDerived>>({
-    queryKey: ['items', { q: debounced }],
-    queryFn: () => api.get('/api/v1/items', debounced ? { q: debounced, sort: 'relevance' } : { sort: 'updated_desc' }),
+    queryKey: qk.items({ q: debounced }),
+    queryFn: () =>
+      endpoints.listItems(
+        debounced ? { q: debounced, sort: 'relevance' } : { sort: 'updated_desc' },
+      ),
   });
 
   return (

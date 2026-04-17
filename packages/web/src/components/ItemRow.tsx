@@ -1,14 +1,14 @@
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ItemWithDerived } from '@sophie/shared';
-import { api } from '../api/client';
+import { endpoints } from '../api/endpoints';
 import { ItemBadges } from './Badge';
 
 export function ItemRow({ item }: { item: ItemWithDerived }) {
   const qc = useQueryClient();
   const quantity = useMutation({
     mutationFn: (op: 'increment' | 'decrement') =>
-      api.post(`/api/v1/items/${item.id}/quantity`, { op, amount: 1, reason: 'manual' }),
+      endpoints.adjustQuantity(item.id, { op, amount: 1, reason: 'manual' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['items'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });

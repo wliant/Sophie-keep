@@ -1,68 +1,60 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError } from '../api/client';
+import { ApiError } from '../api/client';
+import { endpoints, qk, type ShoppingListResponse } from '../api/endpoints';
 import { toast } from '../state/toast';
-import type {
-  ShoppingListAutoEntry,
-  ShoppingListManualEntry,
-} from '@sophie/shared';
-
-interface ShoppingListResponse {
-  auto: ShoppingListAutoEntry[];
-  manual: ShoppingListManualEntry[];
-}
 
 export function ShoppingListPage() {
   const qc = useQueryClient();
   const [draft, setDraft] = useState('');
 
   const list = useQuery<ShoppingListResponse>({
-    queryKey: ['shopping-list'],
-    queryFn: () => api.get('/api/v1/shopping-list'),
+    queryKey: qk.shopping,
+    queryFn: endpoints.getShoppingList,
     refetchInterval: 30000,
   });
 
+  const invalidateShopping = () => qc.invalidateQueries({ queryKey: qk.shopping });
+
   const addManual = useMutation({
-    mutationFn: (label: string) => api.post('/api/v1/shopping-list/entries', { label }),
+    mutationFn: (label: string) => endpoints.addShoppingEntry(label),
     onSuccess: () => {
       setDraft('');
-      qc.invalidateQueries({ queryKey: ['shopping-list'] });
+      invalidateShopping();
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Add failed'),
   });
 
   const patchManual = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) =>
-      api.patch(`/api/v1/shopping-list/entries/${id}`, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['shopping-list'] }),
+      endpoints.patchShoppingEntry(id, patch),
+    onSuccess: invalidateShopping,
   });
 
   const deleteManual = useMutation({
-    mutationFn: (id: string) => api.del(`/api/v1/shopping-list/entries/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['shopping-list'] }),
+    mutationFn: (id: string) => endpoints.deleteShoppingEntry(id),
+    onSuccess: invalidateShopping,
   });
 
   const autoCheck = useMutation({
     mutationFn: (vars: { item_id: string; checked: boolean }) =>
-      api.post('/api/v1/shopping-list/auto-check', vars),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['shopping-list'] }),
+      endpoints.setAutoCheck(vars.item_id, vars.checked),
+    onSuccess: invalidateShopping,
   });
 
   const confirmRestock = useMutation({
-    mutationFn: (payload: unknown) =>
-      api.post('/api/v1/shopping-list/confirm-restock', payload),
+    mutationFn: (payload: unknown) => endpoints.confirmRestock(payload as Record<string, unknown>),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['shopping-list'] });
+      invalidateShopping();
       qc.invalidateQueries({ queryKey: ['items'] });
-      qc.invalidateQueries({ queryKey: ['dashboard'] });
       toast.success('Restock confirmed');
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Restock failed'),
   });
 
   const clearChecked = useMutation({
-    mutationFn: () => api.post('/api/v1/shopping-list/clear-checked', {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['shopping-list'] }),
+    mutationFn: () => endpoints.clearChecked(),
+    onSuccess: invalidateShopping,
   });
 
   if (list.isLoading) return <div>Loading…</div>;

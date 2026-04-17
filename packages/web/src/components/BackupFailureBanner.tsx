@@ -1,15 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../api/client';
-
-interface BackupStatus {
-  last_backup_status: 'ok' | 'failed' | null;
-  last_backup_at: string | null;
-}
+import { endpoints, qk, type BackupStatus } from '../api/endpoints';
 
 export function BackupFailureBanner() {
   const { data } = useQuery<BackupStatus>({
-    queryKey: ['backup-status'],
-    queryFn: () => api.get<BackupStatus>('/api/v1/backups/status'),
+    queryKey: qk.backupStatus,
+    queryFn: endpoints.backupStatus,
     refetchInterval: 5 * 60 * 1000,
   });
   if (!data || data.last_backup_status !== 'failed') return null;

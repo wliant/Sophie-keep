@@ -30,21 +30,33 @@ export function closeDb(): void {
   }
 }
 
-function readMigration(): string {
+function findMigrationsDir(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.join(here, 'migrations', '001_init.sql'),
-    path.join(here, '..', '..', 'src', 'db', 'migrations', '001_init.sql'),
+    path.join(here, 'migrations'),
+    path.join(here, '..', '..', 'src', 'db', 'migrations'),
   ];
   for (const p of candidates) {
-    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    if (fs.existsSync(p)) return p;
   }
-  throw new Error('migration 001_init.sql not found');
+  throw new Error('migrations directory not found');
+}
+
+function loadMigrations(): Array<{ name: string; sql: string }> {
+  const dir = findMigrationsDir();
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => ({ name: f, sql: fs.readFileSync(path.join(dir, f), 'utf8') }));
 }
 
 export function runMigrations(database: Database.Database): void {
-  const sql = readMigration();
-  database.exec(sql);
+  // Idempotent: every statement uses IF NOT EXISTS / IF EXISTS patterns.
+  // We apply all migrations in filename order on every boot.
+  for (const m of loadMigrations()) {
+    database.exec(m.sql);
+  }
   const row = database.prepare('SELECT version FROM schema_version').get() as
     | { version: number }
     | undefined;

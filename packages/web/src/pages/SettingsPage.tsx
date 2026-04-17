@@ -1,14 +1,9 @@
-import { Link, NavLink, Route, Routes, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Route, Routes } from 'react-router-dom';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  BackupRecord,
-  ItemType,
-  Room,
-  Settings,
-  StorageLocation,
-} from '@sophie/shared';
-import { api, ApiError } from '../api/client';
+import type { BackupRecord, ItemType, Room, Settings, StorageLocation } from '@sophie/shared';
+import { ApiError } from '../api/client';
+import { endpoints, qk, type BackupStatus, type HealthResponse } from '../api/endpoints';
 import { toast } from '../state/toast';
 
 export function SettingsPage() {
@@ -16,7 +11,9 @@ export function SettingsPage() {
     <div className="stack">
       <h2 style={{ marginTop: 0 }}>Settings</h2>
       <nav className="row">
-        <NavLink to="/settings">General</NavLink>
+        <NavLink to="/settings" end>
+          General
+        </NavLink>
         <NavLink to="/settings/types">Item types</NavLink>
         <NavLink to="/settings/locations">Rooms & locations</NavLink>
         <NavLink to="/settings/backups">Backups</NavLink>
@@ -35,11 +32,11 @@ export function SettingsPage() {
 
 function General() {
   const qc = useQueryClient();
-  const settings = useQuery<Settings>({ queryKey: ['settings'], queryFn: () => api.get('/api/v1/settings') });
+  const settings = useQuery<Settings>({ queryKey: qk.settings, queryFn: endpoints.getSettings });
   const patch = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.patch('/api/v1/settings', body),
+    mutationFn: (body: Record<string, unknown>) => endpoints.patchSettings(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: qk.settings });
       toast.success('Saved');
     },
   });
@@ -67,22 +64,25 @@ function General() {
 function ItemTypes() {
   const qc = useQueryClient();
   const types = useQuery<{ items: ItemType[] }>({
-    queryKey: ['item-types'],
-    queryFn: () => api.get('/api/v1/item-types'),
+    queryKey: qk.itemTypes,
+    queryFn: endpoints.listTypes,
   });
-  const [draft, setDraft] = useState<{ name: string; default_unit: string }>({ name: '', default_unit: 'pcs' });
+  const [draft, setDraft] = useState<{ name: string; default_unit: string }>({
+    name: '',
+    default_unit: 'pcs',
+  });
 
   const create = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.post('/api/v1/item-types', body),
+    mutationFn: (body: { name: string; default_unit: string }) => endpoints.createType(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['item-types'] });
+      qc.invalidateQueries({ queryKey: qk.itemTypes });
       setDraft({ name: '', default_unit: 'pcs' });
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Create failed'),
   });
   const del = useMutation({
-    mutationFn: (id: string) => api.del(`/api/v1/item-types/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['item-types'] }),
+    mutationFn: (id: string) => endpoints.deleteType(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.itemTypes }),
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Delete failed'),
   });
 
@@ -92,7 +92,8 @@ function ItemTypes() {
         className="row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (draft.name.trim()) create.mutate({ name: draft.name.trim(), default_unit: draft.default_unit });
+          if (draft.name.trim())
+            create.mutate({ name: draft.name.trim(), default_unit: draft.default_unit });
         }}
       >
         <input
@@ -131,7 +132,11 @@ function ItemTypes() {
                 <button
                   className="danger"
                   disabled={(t.item_count ?? 0) > 0}
-                  title={(t.item_count ?? 0) > 0 ? 'Cannot delete: items reference this type' : undefined}
+                  title={
+                    (t.item_count ?? 0) > 0
+                      ? 'Cannot delete: items reference this type'
+                      : undefined
+                  }
                   onClick={() => del.mutate(t.id)}
                 >
                   Delete
@@ -147,27 +152,28 @@ function ItemTypes() {
 
 function Locations() {
   const qc = useQueryClient();
-  const rooms = useQuery<{ items: Room[] }>({ queryKey: ['rooms'], queryFn: () => api.get('/api/v1/rooms') });
+  const rooms = useQuery<{ items: Room[] }>({ queryKey: qk.rooms, queryFn: endpoints.listRooms });
   const locs = useQuery<{ items: StorageLocation[] }>({
-    queryKey: ['storage-locations'],
-    queryFn: () => api.get('/api/v1/storage-locations'),
+    queryKey: qk.locations,
+    queryFn: () => endpoints.listLocations(),
   });
 
   const delRoom = useMutation({
-    mutationFn: (id: string) => api.del(`/api/v1/rooms/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['rooms'] }),
+    mutationFn: (id: string) => endpoints.deleteRoom(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.rooms }),
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Delete failed'),
   });
   const delLoc = useMutation({
-    mutationFn: (id: string) => api.del(`/api/v1/storage-locations/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['storage-locations'] }),
+    mutationFn: (id: string) => endpoints.deleteLocation(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.locations }),
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Delete failed'),
   });
 
   return (
     <section className="card stack">
       <div className="muted">
-        Use the <Link to="/floor-plan">Floor plan editor</Link> to add rooms and locations visually.
+        Use the <Link to="/floor-plan">Floor plan editor</Link> to add rooms and locations
+        visually.
       </div>
       {rooms.data?.items.map((r) => {
         const children = (locs.data?.items ?? []).filter((l) => l.room_id === r.id);
@@ -211,26 +217,25 @@ function Locations() {
 function Backups() {
   const qc = useQueryClient();
   const list = useQuery<{ items: BackupRecord[] }>({
-    queryKey: ['backups'],
-    queryFn: () => api.get('/api/v1/backups'),
+    queryKey: qk.backups,
+    queryFn: endpoints.listBackups,
     refetchInterval: 30000,
   });
-  const status = useQuery<{ last_backup_status: string | null; last_backup_at: string | null }>({
-    queryKey: ['backup-status'],
-    queryFn: () => api.get('/api/v1/backups/status'),
+  const status = useQuery<BackupStatus>({
+    queryKey: qk.backupStatus,
+    queryFn: endpoints.backupStatus,
   });
   const create = useMutation({
-    mutationFn: () => api.post('/api/v1/backups', {}),
+    mutationFn: () => endpoints.createBackup(),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['backups'] });
-      qc.invalidateQueries({ queryKey: ['backup-status'] });
+      qc.invalidateQueries({ queryKey: qk.backups });
+      qc.invalidateQueries({ queryKey: qk.backupStatus });
       toast.success('Backup created');
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Backup failed'),
   });
   const restore = useMutation({
-    mutationFn: (id: string) =>
-      api.post(`/api/v1/backups/${id}/restore`, { confirm: 'REPLACE ALL DATA' }),
+    mutationFn: (id: string) => endpoints.restoreBackup(id),
     onSuccess: () => {
       qc.clear();
       toast.success('Restore complete');
@@ -242,7 +247,9 @@ function Backups() {
     <section className="card stack">
       <div className="muted">
         Last auto-backup: {status.data?.last_backup_status ?? 'never'}{' '}
-        {status.data?.last_backup_at ? `at ${new Date(status.data.last_backup_at).toLocaleString()}` : ''}
+        {status.data?.last_backup_at
+          ? `at ${new Date(status.data.last_backup_at).toLocaleString()}`
+          : ''}
       </div>
       <div className="row">
         <button className="primary" onClick={() => create.mutate()} disabled={create.isPending}>
@@ -265,7 +272,11 @@ function Backups() {
               <td>{Math.round(b.size_bytes / 1024)} KB</td>
               <td>{new Date(b.timestamp).toLocaleString()}</td>
               <td className="row">
-                <a href={`/api/v1/backups/${b.id}/download`} target="_blank" rel="noreferrer">
+                <a
+                  href={endpoints.backupDownloadUrl(b.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   <button>Download</button>
                 </a>
                 <button
@@ -300,12 +311,7 @@ function Backups() {
 }
 
 function System() {
-  const health = useQuery<{ status: string; schema_version: number; app_version: string }>({
-    queryKey: ['health'],
-    queryFn: () => api.get('/api/v1/health'),
-  });
-  const navigate = useNavigate();
-  void navigate;
+  const health = useQuery<HealthResponse>({ queryKey: qk.health, queryFn: endpoints.health });
   if (!health.data) return <div>Loading…</div>;
   return (
     <section className="card stack">

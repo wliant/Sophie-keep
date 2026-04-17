@@ -1,13 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { ItemWithDerived, PaginatedResponse } from '@sophie/shared';
-import { api } from '../api/client';
+import { endpoints, qk } from '../api/endpoints';
 import { ItemRow } from '../components/ItemRow';
 
 function useItems(query: Record<string, unknown>) {
   return useQuery<PaginatedResponse<ItemWithDerived>>({
-    queryKey: ['items', query],
-    queryFn: () => api.get('/api/v1/items', query),
+    queryKey: qk.items(query),
+    queryFn: () => endpoints.listItems(query),
   });
 }
 

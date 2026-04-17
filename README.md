@@ -66,7 +66,35 @@ Environment variables (all optional):
 npm test
 ```
 
-Runs vitest (backend integration + unit tests).
+Runs vitest across all workspaces (36 tests covering shape validation,
+alerts parity, bind-routability, request/response contracts, photo EXIF
+stripping, backup round-trip + tampering, floor-plan edit-session
+rollback, and a basic frontend render test).
+
+## Health probes
+
+| Path | Purpose |
+|---|---|
+| `/api/v1/health` | Summary used by the System settings screen. |
+| `/api/v1/health/live` | Liveness (process up, no DB call). |
+| `/api/v1/health/ready` | Readiness (DB open at the expected schema). 503 on mismatch. |
+
+## Docker
+
+```
+docker build -t sophie-keep .
+docker run --rm -p 3000:3000 -v sophie-data:/data sophie-keep
+```
+
+The image compiles `better-sqlite3` and `sharp` in a Debian build stage, then
+ships a slim runtime stage with `libvips` and a non-root `sophie` user.
+Data (SQLite file, photos, backups, logs) lives under `/data` — mount a volume
+to persist it.
+
+## CI
+
+`.github/workflows/ci.yml` runs `typecheck`, `build`, and `test` on every push,
+plus a Docker image build on a separate job.
 
 ## Specs traceability
 

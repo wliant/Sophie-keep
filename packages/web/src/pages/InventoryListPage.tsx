@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import type { ItemType, ItemWithDerived, PaginatedResponse, StorageLocation } from '@sophie/shared';
-import { api } from '../api/client';
+import { endpoints, qk } from '../api/endpoints';
 import { ItemRow } from '../components/ItemRow';
 
 const SORT_OPTIONS: Array<{ value: string; label: string }> = [
@@ -28,17 +28,17 @@ export function InventoryListPage() {
   }, [params]);
 
   const items = useQuery<PaginatedResponse<ItemWithDerived>>({
-    queryKey: ['items', queryObj],
-    queryFn: () => api.get('/api/v1/items', queryObj),
+    queryKey: qk.items(queryObj),
+    queryFn: () => endpoints.listItems(queryObj),
   });
 
   const types = useQuery<{ items: ItemType[] }>({
-    queryKey: ['item-types'],
-    queryFn: () => api.get('/api/v1/item-types'),
+    queryKey: qk.itemTypes,
+    queryFn: endpoints.listTypes,
   });
   const locations = useQuery<{ items: StorageLocation[] }>({
-    queryKey: ['storage-locations'],
-    queryFn: () => api.get('/api/v1/storage-locations'),
+    queryKey: qk.locations,
+    queryFn: () => endpoints.listLocations(),
   });
 
   const setParam = (key: string, value: string | null) => {

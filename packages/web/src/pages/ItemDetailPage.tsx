@@ -1,17 +1,11 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
-import type {
-  ItemType,
-  ItemWithDerived,
-  QuantityChange,
-  StorageLocation,
-} from '@sophie/shared';
-import { api, ApiError } from '../api/client';
+import type { ItemType, StorageLocation } from '@sophie/shared';
+import { ApiError } from '../api/client';
+import { endpoints, qk, type ItemDetailResponse } from '../api/endpoints';
 import { toast } from '../state/toast';
 import { ItemBadges } from '../components/Badge';
-
-type DetailResponse = ItemWithDerived & { quantity_changes: QuantityChange[] };
 
 export function ItemDetailPage() {
   const { id = '' } = useParams();
@@ -19,23 +13,27 @@ export function ItemDetailPage() {
   const qc = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const item = useQuery<DetailResponse>({
-    queryKey: ['items', id],
-    queryFn: () => api.get(`/api/v1/items/${id}`),
+  const item = useQuery<ItemDetailResponse>({
+    queryKey: qk.item(id),
+    queryFn: () => endpoints.getItem(id),
   });
   const types = useQuery<{ items: ItemType[] }>({
-    queryKey: ['item-types'],
-    queryFn: () => api.get('/api/v1/item-types'),
+    queryKey: qk.itemTypes,
+    queryFn: endpoints.listTypes,
   });
   const locations = useQuery<{ items: StorageLocation[] }>({
-    queryKey: ['storage-locations'],
-    queryFn: () => api.get('/api/v1/storage-locations'),
+    queryKey: qk.locations,
+    queryFn: () => endpoints.listLocations(),
   });
 
+  const invalidateItems = () => {
+    qc.invalidateQueries({ queryKey: ['items'] });
+  };
+
   const patch = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.patch(`/api/v1/items/${id}`, body),
+    mutationFn: (body: Record<string, unknown>) => endpoints.patchItem(id, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['items'] });
+      invalidateItems();
       toast.success('Saved');
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Save failed'),
@@ -43,21 +41,21 @@ export function ItemDetailPage() {
 
   const setQty = useMutation({
     mutationFn: (amount: number) =>
-      api.post(`/api/v1/items/${id}/quantity`, { op: 'set', amount, reason: 'manual' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['items'] }),
+      endpoints.adjustQuantity(id, { op: 'set', amount, reason: 'manual' }),
+    onSuccess: invalidateItems,
   });
 
   const adjustQty = useMutation({
     mutationFn: (op: 'increment' | 'decrement') =>
-      api.post(`/api/v1/items/${id}/quantity`, { op, amount: 1, reason: 'manual' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['items'] }),
+      endpoints.adjustQuantity(id, { op, amount: 1, reason: 'manual' }),
+    onSuccess: invalidateItems,
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Update failed'),
   });
 
   const deleteItem = useMutation({
-    mutationFn: () => api.del(`/api/v1/items/${id}`),
+    mutationFn: () => endpoints.deleteItem(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['items'] });
+      invalidateItems();
       toast.success('Deleted');
       navigate('/inventory');
     },
@@ -65,24 +63,18 @@ export function ItemDetailPage() {
   });
 
   const upload = useMutation({
-    mutationFn: async (files: FileList) => {
-      const form = new FormData();
-      form.set('owner_kind', 'item');
-      form.set('owner_id', id);
-      Array.from(files).forEach((f) => form.append('file', f));
-      return api.upload('/api/v1/photos', form);
-    },
+    mutationFn: (files: FileList) => endpoints.uploadPhotos('item', id, files),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['items', id] });
-      qc.invalidateQueries({ queryKey: ['items'] });
+      qc.invalidateQueries({ queryKey: qk.item(id) });
+      invalidateItems();
       toast.success('Photo uploaded');
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Upload failed'),
   });
 
   const deletePhoto = useMutation({
-    mutationFn: (photoId: string) => api.del(`/api/v1/photos/${photoId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['items', id] }),
+    mutationFn: (photoId: string) => endpoints.deletePhoto(photoId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.item(id) }),
   });
 
   const [nameDraft, setNameDraft] = useState<string | null>(null);
@@ -248,14 +240,16 @@ export function ItemDetailPage() {
         <h3 style={{ marginTop: 0 }}>Photos</h3>
         <div className="row" style={{ flexWrap: 'wrap' }}>
           {d.photo_ids.map((pid) => (
-            <div
-              key={pid}
-              style={{ position: 'relative', width: 100, height: 100 }}
-            >
+            <div key={pid} style={{ position: 'relative', width: 100, height: 100 }}>
               <img
                 src={`/api/v1/photos/${pid}?variant=thumb`}
                 alt="Photo"
-                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  borderRadius: 'var(--radius-sm)',
+                }}
               />
               <button
                 aria-label="Delete photo"

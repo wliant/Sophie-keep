@@ -1,17 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError } from '../api/client';
+import { ApiError } from '../api/client';
+import {
+  endpoints,
+  qk,
+  type AutocompleteMatch,
+} from '../api/endpoints';
 import type { ItemType, Settings, StorageLocation } from '@sophie/shared';
 import { toast } from '../state/toast';
-
-interface AutoMatch {
-  id: string;
-  name: string;
-  type_name: string | null;
-  location_name: string | null;
-  quantity: number;
-  unit: string;
-}
 
 export function QuickAddModal({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
@@ -27,16 +23,16 @@ export function QuickAddModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const settings = useQuery<Settings>({
-    queryKey: ['settings'],
-    queryFn: () => api.get<Settings>('/api/v1/settings'),
+    queryKey: qk.settings,
+    queryFn: endpoints.getSettings,
   });
   const types = useQuery<{ items: ItemType[] }>({
-    queryKey: ['item-types'],
-    queryFn: () => api.get('/api/v1/item-types'),
+    queryKey: qk.itemTypes,
+    queryFn: endpoints.listTypes,
   });
   const locations = useQuery<{ items: StorageLocation[] }>({
-    queryKey: ['storage-locations'],
-    queryFn: () => api.get('/api/v1/storage-locations'),
+    queryKey: qk.locations,
+    queryFn: () => endpoints.listLocations(),
   });
 
   useEffect(() => {
@@ -52,45 +48,39 @@ export function QuickAddModal({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const autocomplete = useQuery<{ items: AutoMatch[] }>({
-    queryKey: ['autocomplete', debouncedQ],
+  const autocomplete = useQuery<{ items: AutocompleteMatch[] }>({
+    queryKey: qk.autocomplete(debouncedQ),
     queryFn: () =>
-      debouncedQ
-        ? api.get('/api/v1/items/autocomplete', { q: debouncedQ, limit: 5 })
-        : Promise.resolve({ items: [] }),
+      debouncedQ ? endpoints.autocomplete(debouncedQ, 5) : Promise.resolve({ items: [] }),
     enabled: debouncedQ.length > 0,
   });
 
   const saveMut = useMutation({
-    mutationFn: async (payload: {
+    mutationFn: (payload: {
       existing_item_id?: string;
       name?: string;
       item_type_id?: string;
       storage_location_id?: string;
       amount?: number;
-    }) => api.post('/api/v1/quick-add', payload),
+    }) => endpoints.quickAdd(payload),
     onSuccess: (res) => {
-      const created = (res as { created: boolean }).created;
-      toast.success(created ? 'Item created' : 'Quantity incremented');
+      toast.success(res.created ? 'Item created' : 'Quantity incremented');
       qc.invalidateQueries({ queryKey: ['items'] });
       qc.invalidateQueries({ queryKey: ['autocomplete'] });
-      qc.invalidateQueries({ queryKey: ['dashboard'] });
-      qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: qk.settings });
       onClose();
     },
     onError: (err: unknown) => {
-      if (err instanceof ApiError) toast.error(err.message);
-      else toast.error('Save failed');
+      toast.error(err instanceof ApiError ? err.message : 'Save failed');
     },
   });
 
-  const handlePickMatch = (match: AutoMatch) => {
+  const handlePickMatch = (match: AutocompleteMatch) => {
     saveMut.mutate({ existing_item_id: match.id, amount });
   };
 
   const handleSaveNew = () => {
-    const needsDefaults =
-      !typeId || !locId;
+    const needsDefaults = !typeId || !locId;
     if (needsDefaults) {
       setDefaultsShown(true);
       return;

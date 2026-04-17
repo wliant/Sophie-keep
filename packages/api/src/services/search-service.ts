@@ -9,6 +9,31 @@ import {
   isExpiringSoonSQL,
 } from './alerts-service.js';
 
+// Registry of supported sort keys. Adding a new sort = one entry here.
+// `order(ftsQ, params)` returns the ORDER BY clause and may push extra
+// placeholders into `params` (used for relevance which re-uses the FTS query).
+const SORTS: Record<
+  NonNullable<ItemSearchQuery['sort']>,
+  { order: (ftsQ: string | null, params: unknown[]) => string }
+> = {
+  relevance: {
+    order: (ftsQ, params) => {
+      if (!ftsQ) return 'ORDER BY items.updated_at DESC';
+      params.push(ftsQ);
+      return 'ORDER BY (SELECT rank FROM items_fts WHERE items_fts MATCH ? AND items_fts.rowid = items.rowid) ASC, items.name COLLATE NOCASE';
+    },
+  },
+  name_asc: { order: () => 'ORDER BY items.name COLLATE NOCASE ASC' },
+  name_desc: { order: () => 'ORDER BY items.name COLLATE NOCASE DESC' },
+  updated_desc: { order: () => 'ORDER BY items.updated_at DESC' },
+  expiration_asc: {
+    order: () =>
+      'ORDER BY CASE WHEN items.expiration_date IS NULL THEN 1 ELSE 0 END, items.expiration_date ASC',
+  },
+  quantity_asc: { order: () => 'ORDER BY items.quantity ASC' },
+  quantity_desc: { order: () => 'ORDER BY items.quantity DESC' },
+};
+
 function toArray(v: string | string[] | undefined): string[] {
   if (!v) return [];
   return Array.isArray(v) ? v : [v];
@@ -92,36 +117,8 @@ export function searchItems(
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  let orderSql = '';
-  switch (sort) {
-    case 'relevance':
-      if (ftsQ) {
-        orderSql = `ORDER BY (SELECT rank FROM items_fts WHERE items_fts MATCH ? AND items_fts.rowid = items.rowid) ASC, items.name COLLATE NOCASE`;
-        orderParams.push(ftsQ);
-      } else {
-        orderSql = 'ORDER BY items.updated_at DESC';
-      }
-      break;
-    case 'name_asc':
-      orderSql = 'ORDER BY items.name COLLATE NOCASE ASC';
-      break;
-    case 'name_desc':
-      orderSql = 'ORDER BY items.name COLLATE NOCASE DESC';
-      break;
-    case 'updated_desc':
-      orderSql = 'ORDER BY items.updated_at DESC';
-      break;
-    case 'expiration_asc':
-      orderSql =
-        'ORDER BY CASE WHEN items.expiration_date IS NULL THEN 1 ELSE 0 END, items.expiration_date ASC';
-      break;
-    case 'quantity_asc':
-      orderSql = 'ORDER BY items.quantity ASC';
-      break;
-    case 'quantity_desc':
-      orderSql = 'ORDER BY items.quantity DESC';
-      break;
-  }
+  const sortConfig = SORTS[sort];
+  const orderSql = sortConfig.order(ftsQ, orderParams);
 
   const baseJoin = `
     FROM items
