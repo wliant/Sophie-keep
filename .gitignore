@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Node.js / Sophie-keep
+node_modules/
+dist/
+data/
+*.log
+.vite/
+*.tsbuildinfo
+coverage/
+.DS_Store
