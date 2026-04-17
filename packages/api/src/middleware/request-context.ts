@@ -1,12 +1,11 @@
 import type { FastifyInstance } from 'fastify';
-import { ulid } from '../util/ulid.js';
 
 export function registerRequestContext(app: FastifyInstance): void {
+  // Echo the request id (set by genReqId) in the response header so clients
+  // can correlate with server logs. Keep Fastify's own reqId in logs aligned
+  // with the value returned in error envelopes.
   app.addHook('onRequest', async (req, reply) => {
-    const incoming = req.headers['x-request-id'];
-    const id = typeof incoming === 'string' && incoming.length > 0 ? incoming : ulid();
-    reply.header('x-request-id', id);
-    (req as unknown as { request_id: string }).request_id = id;
+    reply.header('x-request-id', req.id);
   });
 
   app.addHook('onSend', async (req, reply, payload) => {

@@ -259,8 +259,16 @@ export function pruneOldBackups(olderThanDays = 30): void {
 export async function restoreBackup(
   db: Database.Database,
   backupPath: string,
+  opts: { isRollbackAttempt?: boolean } = {},
 ): Promise<void> {
-  const contents = await readBackupContents(backupPath);
+  let contents: Awaited<ReturnType<typeof readBackupContents>>;
+  try {
+    contents = await readBackupContents(backupPath);
+  } catch (e) {
+    // Corrupted archive, zlib data error, truncated file, etc.
+    const msg = e instanceof Error ? e.message : String(e);
+    throw backupChecksumMismatch(`backup file is unreadable: ${msg}`);
+  }
   if (!contents.manifest || !contents.data) {
     throw restoreFailed('backup file is missing manifest or data');
   }
@@ -275,16 +283,19 @@ export async function restoreBackup(
     throw backupChecksumMismatch('restore aborted: backup checksum mismatch');
   }
 
-  // Create pre-restore snapshot
-  fs.mkdirSync(config.backupRoot, { recursive: true });
-  const snapshotName = `pre_restore_${clock.nowIso().replace(/[:.]/g, '-')}.tar.gz`;
-  const snapshotPath = path.join(config.backupRoot, snapshotName);
-  try {
-    await createBackupSnapshot(db, snapshotPath);
-  } catch (e) {
-    throw restoreFailed(
-      `could not create pre-restore snapshot: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  // Skip snapshot creation on a rollback attempt to avoid recursion.
+  let snapshotPath: string | null = null;
+  if (!opts.isRollbackAttempt) {
+    fs.mkdirSync(config.backupRoot, { recursive: true });
+    const snapshotName = `pre_restore_${clock.nowIso().replace(/[:.]/g, '-')}.tar.gz`;
+    snapshotPath = path.join(config.backupRoot, snapshotName);
+    try {
+      await createBackupSnapshot(db, snapshotPath);
+    } catch (e) {
+      throw restoreFailed(
+        `could not create pre-restore snapshot: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   const photosBackupDir = config.photoRoot + '.old-' + Date.now();
@@ -323,25 +334,34 @@ export async function restoreBackup(
         fs.writeFileSync(path.join(p.file_path, rel), buf);
       }
     }
-    // cleanup old photos
     if (fs.existsSync(photosBackupDir)) {
       fs.rmSync(photosBackupDir, { recursive: true, force: true });
     }
   } catch (e) {
-    // Rollback by restoring from the pre-restore snapshot
-    try {
-      if (fs.existsSync(photosBackupDir)) {
-        if (fs.existsSync(config.photoRoot)) {
-          fs.rmSync(config.photoRoot, { recursive: true, force: true });
+    const originalMessage = e instanceof Error ? e.message : String(e);
+    // Attempt rollback (only when we created a snapshot). Guard against infinite
+    // recursion via opts.isRollbackAttempt — a failed rollback surfaces both.
+    if (snapshotPath && !opts.isRollbackAttempt) {
+      try {
+        if (fs.existsSync(photosBackupDir)) {
+          if (fs.existsSync(config.photoRoot)) {
+            fs.rmSync(config.photoRoot, { recursive: true, force: true });
+          }
+          fs.renameSync(photosBackupDir, config.photoRoot);
         }
-        fs.renameSync(photosBackupDir, config.photoRoot);
+        await restoreBackup(db, snapshotPath, { isRollbackAttempt: true });
+        throw restoreFailed(
+          `restore failed and rolled back: ${originalMessage} (pre-restore snapshot at ${snapshotPath})`,
+        );
+      } catch (rollbackErr) {
+        const rbMsg = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+        throw restoreFailed(
+          `restore failed AND rollback failed. original=${originalMessage} rollback=${rbMsg} (pre-restore snapshot at ${snapshotPath})`,
+        );
       }
-      await restoreBackup(db, snapshotPath);
-    } catch {
-      // double-failure: surface original
     }
     throw restoreFailed(
-      `restore failed: ${e instanceof Error ? e.message : String(e)} (pre-restore snapshot preserved at ${snapshotPath})`,
+      `restore failed: ${originalMessage}${snapshotPath ? ` (pre-restore snapshot at ${snapshotPath})` : ''}`,
     );
   }
 }

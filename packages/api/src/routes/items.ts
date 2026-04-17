@@ -20,6 +20,7 @@ import {
 import { autocompleteItems, searchItems } from '../services/search-service.js';
 import { z } from 'zod';
 import { cleanupPhotoDirs } from '../services/photo-service.js';
+import { parseId } from '../util/params.js';
 
 export async function itemsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/items', async (req) => {
@@ -40,7 +41,7 @@ export async function itemsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/v1/items/:id', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const item = getItem(getDb(), id);
     return {
       ...enrichItem(getDb(), item),
@@ -49,14 +50,14 @@ export async function itemsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.patch('/api/v1/items/:id', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const body = itemPatchZ.parse(req.body);
     const item = patchItem(getDb(), id, body);
     return enrichItem(getDb(), item);
   });
 
   app.delete('/api/v1/items/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const { photoPaths } = deleteItem(getDb(), id);
     cleanupPhotoDirs(photoPaths);
     reply.status(204);
@@ -64,7 +65,7 @@ export async function itemsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/v1/items/:id/quantity', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const body = quantityOpZ.parse(req.body);
     const result = applyQuantityOp(
       getDb(),
@@ -80,7 +81,7 @@ export async function itemsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/v1/items/:id/photos/order', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const body = z.object({ photo_ids: z.array(z.string()).max(10) }).parse(req.body);
     const item = reorderPhotos(getDb(), id, body.photo_ids);
     return enrichItem(getDb(), item);

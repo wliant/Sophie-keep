@@ -7,6 +7,7 @@ import {
   shoppingEntryPatchZ,
 } from '@sophie/shared';
 import { getDb } from '../db/sqlite.js';
+import { parseId } from '../util/params.js';
 import {
   clearChecked,
   confirmRestock,
@@ -28,13 +29,13 @@ export async function shoppingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.patch('/api/v1/shopping-list/entries/:id', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const body = shoppingEntryPatchZ.parse(req.body);
     return patchManualEntry(getDb(), id, body);
   });
 
   app.delete('/api/v1/shopping-list/entries/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     deleteManualEntry(getDb(), id);
     reply.status(204);
     return null;

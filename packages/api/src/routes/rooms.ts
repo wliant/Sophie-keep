@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { roomCreateZ, roomPatchZ } from '@sophie/shared';
 import { getDb } from '../db/sqlite.js';
+import { parseId } from '../util/params.js';
 import {
   createRoom,
   deleteRoom,
@@ -21,18 +22,18 @@ export async function roomsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/v1/rooms/:id', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     return getRoom(getDb(), id);
   });
 
   app.patch('/api/v1/rooms/:id', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const body = roomPatchZ.parse(req.body);
     return patchRoom(getDb(), id, body);
   });
 
   app.delete('/api/v1/rooms/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     deleteRoom(getDb(), id);
     reply.status(204);
     return null;

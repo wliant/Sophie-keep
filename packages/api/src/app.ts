@@ -7,6 +7,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
 import { registerRequestContext } from './middleware/request-context.js';
+import { ulid } from './util/ulid.js';
 import { healthRoutes } from './routes/health.js';
 import { itemsRoutes } from './routes/items.js';
 import { itemTypesRoutes } from './routes/item-types.js';
@@ -27,6 +28,14 @@ export async function buildApp(): Promise<FastifyInstance> {
       : true,
     bodyLimit: 12 * 1024 * 1024,
     trustProxy: false,
+    // Use ULIDs as the request id so logs and error envelopes both carry the
+    // same correlation id. Honour an incoming x-request-id if provided.
+    genReqId: (req) => {
+      const incoming = req.headers['x-request-id'];
+      return typeof incoming === 'string' && incoming.length > 0 ? incoming : ulid();
+    },
+    requestIdHeader: 'x-request-id',
+    requestIdLogLabel: 'request_id',
   });
 
   await app.register(multipart, {

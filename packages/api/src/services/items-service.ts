@@ -128,8 +128,10 @@ export function patchItem(db: Database.Database, id: string, patch: ItemPatch): 
     });
   }
   const now = clock.nowIso();
+  // Zod's trim transform runs on incoming patch values. Trim here again so
+  // the merged result matches the shape createItem would produce.
   const next = {
-    name: patch.name ?? existing.name,
+    name: (patch.name ?? existing.name).trim(),
     item_type_id: patch.item_type_id ?? existing.item_type_id,
     storage_location_id: patch.storage_location_id ?? existing.storage_location_id,
     quantity: patch.quantity ?? existing.quantity,
@@ -140,7 +142,12 @@ export function patchItem(db: Database.Database, id: string, patch: ItemPatch): 
       patch.low_stock_threshold === undefined
         ? existing.low_stock_threshold
         : patch.low_stock_threshold,
-    notes: patch.notes === undefined ? existing.notes : patch.notes,
+    notes:
+      patch.notes === undefined
+        ? existing.notes
+        : patch.notes === null
+          ? null
+          : patch.notes,
     photo_ids: patch.photo_ids
       ? JSON.stringify(patch.photo_ids)
       : existing.photo_ids,
@@ -164,15 +171,19 @@ export function patchItem(db: Database.Database, id: string, patch: ItemPatch): 
 }
 
 export function deleteItem(db: Database.Database, id: string): { photoPaths: string[] } {
-  const existing = getItem(db, id);
-  const photoRows = db
-    .prepare('SELECT file_path FROM photos WHERE owner_kind = ? AND owner_id = ?')
-    .all('item', id) as Array<{ file_path: string }>;
-  db.prepare('DELETE FROM items WHERE id = ?').run(id);
-  // quantity_changes cascade; photos need manual cleanup at route level since files are on disk
-  db.prepare('DELETE FROM photos WHERE owner_kind = ? AND owner_id = ?').run('item', id);
-  void existing;
-  return { photoPaths: photoRows.map((r) => r.file_path) };
+  // Collect photo paths for post-commit filesystem cleanup, then atomically
+  // delete photo rows + item row so we never leave dangling photo metadata.
+  // (quantity_changes cascade via FK; photos.owner_id is TEXT so we clean
+  // them explicitly in the same transaction.)
+  return tx(db, () => {
+    getItem(db, id); // throws NOT_FOUND if missing
+    const photoRows = db
+      .prepare('SELECT file_path FROM photos WHERE owner_kind = ? AND owner_id = ?')
+      .all('item', id) as Array<{ file_path: string }>;
+    db.prepare('DELETE FROM photos WHERE owner_kind = ? AND owner_id = ?').run('item', id);
+    db.prepare('DELETE FROM items WHERE id = ?').run(id);
+    return { photoPaths: photoRows.map((r) => r.file_path) };
+  });
 }
 
 export function applyQuantityOp(

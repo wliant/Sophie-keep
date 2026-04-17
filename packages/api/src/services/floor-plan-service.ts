@@ -58,8 +58,19 @@ export function patchPlan(db: Database.Database, patch: FloorPlanPatch): FloorPl
   return getPlan(db);
 }
 
-interface SessionErrors {
-  errors: Array<{ op_index: number; message: string; field?: string }>;
+export interface SessionOpError {
+  op_index: number;
+  message: string;
+  field?: string;
+}
+
+export class EditSessionError extends Error {
+  public readonly sessionErrors: SessionOpError[];
+  constructor(errors: SessionOpError[]) {
+    super('edit_session_failed');
+    this.name = 'EditSessionError';
+    this.sessionErrors = errors;
+  }
 }
 
 export function applyEditSession(
@@ -68,7 +79,7 @@ export function applyEditSession(
 ): { plan: FloorPlan; rooms_created: Record<string, string>; locations_created: Record<string, string> } {
   const roomsCreated: Record<string, string> = {};
   const locationsCreated: Record<string, string> = {};
-  const errors: SessionErrors['errors'] = [];
+  const errors: SessionOpError[] = [];
 
   const result = tx(db, () => {
     if (session.plan) {
@@ -89,8 +100,8 @@ export function applyEditSession(
     }
 
     if (errors.length > 0) {
-      // Rollback the transaction by throwing
-      throw Object.assign(new Error('edit_session_failed'), { sessionErrors: errors });
+      // Rollback the transaction by throwing a typed error that survives rethrow.
+      throw new EditSessionError(errors);
     }
 
     return { plan: getPlan(db) };

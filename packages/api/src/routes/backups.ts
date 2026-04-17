@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { z } from 'zod';
 import { restoreConfirmZ } from '@sophie/shared';
 import { getDb } from '../db/sqlite.js';
+import { parseId } from '../util/params.js';
 import {
   createBackup,
   getBackupPath,
@@ -32,7 +32,7 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/v1/backups/:id/download', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const full = getBackupPath(id);
     reply.header('content-type', 'application/gzip');
     reply.header('content-disposition', `attachment; filename="${id}"`);
@@ -40,7 +40,7 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/v1/backups/:id/restore', async (req) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     restoreConfirmZ.parse(req.body);
     const full = getBackupPath(id);
     await restoreBackup(getDb(), full);

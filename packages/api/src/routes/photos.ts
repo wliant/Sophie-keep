@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import { z } from 'zod';
 import { getDb } from '../db/sqlite.js';
+import { parseId } from '../util/params.js';
 import {
   deletePhoto,
   getPhoto,
@@ -58,7 +59,7 @@ export async function photosRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/v1/photos/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     const q = z.object({ variant: z.enum(['thumb', 'original']).optional() }).parse(req.query);
     const p = getPhoto(getDb(), id);
     const files = photoFiles(p);
@@ -70,7 +71,7 @@ export async function photosRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete('/api/v1/photos/:id', async (req, reply) => {
-    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const id = parseId(req.params);
     deletePhoto(getDb(), id);
     reply.status(204);
     return null;

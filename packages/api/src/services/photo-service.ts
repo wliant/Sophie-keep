@@ -82,7 +82,10 @@ export async function uploadPhoto(
   const originalPath = path.join(dir, `original.${ext}`);
   const thumbPath = path.join(dir, `thumb.webp`);
 
-  // EXIF strip + rotate + original (re-encode to remove metadata)
+  // Strip EXIF by re-encoding without calling withMetadata/keepMetadata:
+  // sharp's default is to drop all metadata. .rotate() first applies the
+  // EXIF orientation so the rendered pixels are upright, then the re-encode
+  // writes a clean file. (NFR-PRIV-003, AC-CROSS-032)
   const img = sharp(buffer).rotate();
   const reencoder =
     sniffed.mime === 'image/jpeg'
@@ -90,7 +93,7 @@ export async function uploadPhoto(
       : sniffed.mime === 'image/png'
         ? img.png()
         : img.webp({ quality: 90 });
-  await reencoder.withMetadata({ exif: undefined as unknown as never, orientation: 1 }).toFile(originalPath);
+  await reencoder.toFile(originalPath);
 
   try {
     await sharp(originalPath).resize(512, 512, { fit: 'inside' }).webp({ quality: 80 }).toFile(thumbPath);

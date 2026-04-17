@@ -47,18 +47,21 @@ export function searchItems(
   const hasPhoto = toBool(query.has_photo);
   const sort = query.sort ?? (query.q ? 'relevance' : 'updated_desc');
 
+  // Keep WHERE-clause params and ORDER-BY params separate so COUNT and
+  // SELECT each get exactly the params they reference. This avoids silent
+  // misalignment when sort keys introduce their own placeholders.
   const where: string[] = [];
-  const params: unknown[] = [];
-  const joinFts = query.q && query.q.trim().length > 0;
-  const ftsQ = joinFts ? ftsQueryFromText(query.q!) : null;
+  const whereParams: unknown[] = [];
+  const orderParams: unknown[] = [];
+  const ftsQ = query.q && query.q.trim().length > 0 ? ftsQueryFromText(query.q) : null;
 
   if (typeIds.length) {
     where.push(`items.item_type_id IN (${typeIds.map(() => '?').join(',')})`);
-    params.push(...typeIds);
+    whereParams.push(...typeIds);
   }
   if (locationIds.length) {
     where.push(`items.storage_location_id IN (${locationIds.map(() => '?').join(',')})`);
-    params.push(...locationIds);
+    whereParams.push(...locationIds);
   }
   if (roomIds.length) {
     where.push(
@@ -66,13 +69,13 @@ export function searchItems(
         .map(() => '?')
         .join(',')}))`,
     );
-    params.push(...roomIds);
+    whereParams.push(...roomIds);
   }
   if (query.expires_within_days != null) {
     where.push(
       `items.expiration_date IS NOT NULL AND items.expiration_date <= date('now', '+' || ? || ' day')`,
     );
-    params.push(query.expires_within_days);
+    whereParams.push(query.expires_within_days);
   }
   if (lowStockOnly) {
     where.push(`${IS_LOW_STOCK_SQL} = 1`);
@@ -84,7 +87,7 @@ export function searchItems(
   }
   if (ftsQ) {
     where.push('items.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)');
-    params.push(ftsQ);
+    whereParams.push(ftsQ);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -94,8 +97,7 @@ export function searchItems(
     case 'relevance':
       if (ftsQ) {
         orderSql = `ORDER BY (SELECT rank FROM items_fts WHERE items_fts MATCH ? AND items_fts.rowid = items.rowid) ASC, items.name COLLATE NOCASE`;
-        // We need to reuse the query param for relevance order-by; simplest path: push again.
-        params.push(ftsQ);
+        orderParams.push(ftsQ);
       } else {
         orderSql = 'ORDER BY items.updated_at DESC';
       }
@@ -129,7 +131,7 @@ export function searchItems(
     ${whereSql}
   `;
 
-  const countRow = db.prepare(`SELECT COUNT(*) AS n ${baseJoin}`).get(...params.slice(0, params.length - (sort === 'relevance' && ftsQ ? 1 : 0))) as
+  const countRow = db.prepare(`SELECT COUNT(*) AS n ${baseJoin}`).get(...whereParams) as
     | { n: number }
     | undefined;
   const total = countRow?.n ?? 0;
@@ -151,7 +153,7 @@ export function searchItems(
        ${orderSql}
        LIMIT ? OFFSET ?`,
     )
-    .all(...params, pageSize, offset) as Array<Record<string, unknown>>;
+    .all(...whereParams, ...orderParams, pageSize, offset) as Array<Record<string, unknown>>;
 
   const items: ItemWithDerived[] = rows.map((r) => {
     const photoIds = JSON.parse((r.photo_ids as string) || '[]') as string[];
