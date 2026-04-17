@@ -53,6 +53,8 @@ Every requirement here is measurable — either a number, a percentile, or a bin
 - **NFR-OBS-002**: All errors thrown in request handlers must be logged with stack traces (server-side only, never returned to the client verbatim).
 - **NFR-OBS-003**: Logs must be kept on the local filesystem with size-based rotation (default 50 MB × 10 files). No external telemetry.
 
+Operational detail — log format, required events, error-propagation contract, health/metrics surface — is specified in `15-observability.md`.
+
 ## Internationalization
 
 - **NFR-I18N-001**: v1 ships with English copy only.

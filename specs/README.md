@@ -28,6 +28,9 @@ Start here, then follow the numbered files. Use `CONVENTIONS.md` as the authorin
 | 10 | [10-acceptance-criteria.md](./10-acceptance-criteria.md) | Cross-cutting acceptance tests |
 | 11 | [11-open-issues.md](./11-open-issues.md) | Assumptions, constraints, parked questions |
 | 12 | [12-future-and-out-of-scope.md](./12-future-and-out-of-scope.md) | Explicit non-goals and future ideas |
+| 13 | [13-testability.md](./13-testability.md) | Unit, integration, and e2e testing strategy |
+| 14 | [14-developer-experience.md](./14-developer-experience.md) | Docker compose layout, env vars, concurrent local instances |
+| 15 | [15-observability.md](./15-observability.md) | Structured logging, error propagation, health/metrics |
 
 ## Extension model
 
