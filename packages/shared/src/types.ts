@@ -1,5 +1,15 @@
 import type { Shape } from './shapes.js';
 
+export interface Door {
+  id: string;
+  room_id: string;
+  wall: 'north' | 'south' | 'east' | 'west';
+  /** 0..1 position along the wall */
+  t: number;
+  /** opening width in floor-plan units */
+  width: number;
+}
+
 export type QuantityChangeReason =
   | 'manual'
   | 'quick_add'
@@ -68,6 +78,7 @@ export interface FloorPlan {
   width: number;
   height: number;
   background_image_photo_id: string | null;
+  doors: Door[];
   created_at: string;
   updated_at: string;
 }

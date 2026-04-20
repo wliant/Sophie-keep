@@ -1,22 +1,43 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import type { FloorPlan, Room, StorageLocation } from '@sophie/shared';
+import type { FloorPlan, Room, StorageLocation, Door, Shape, RectShape } from '@sophie/shared';
 import { endpoints, qk } from '../api/endpoints';
 import { ApiError } from '../api/client';
 import { toast } from '../state/toast';
 import { FloorPlanCanvas } from '../components/FloorPlanCanvas';
+import type { CanvasToolMode } from '../components/FloorPlanCanvas';
+import { CanvasToolbar } from '../components/CanvasToolbar';
 import { ShapeEditor } from '../components/ShapeEditor';
 import { SelectInput } from '../components/form/FormField';
 import { useEditSession } from '../state/edit-session';
 
 type Mode = 'view' | 'edit';
 
+type PolygonDraft = { vertices: [number, number][] };
+
+function generateDoorId(): string {
+  return `door_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
 export function FloorPlanPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [mode, setMode] = useState<Mode>('view');
   const [errors, setErrors] = useState<Array<{ op_index: number; message: string }>>([]);
+
+  // Toolbar state
+  const [toolMode, setToolMode] = useState<CanvasToolMode>('select');
+  const [drawTarget, setDrawTarget] = useState<'room' | 'loc'>('room');
+  const toolModeRef = useRef(toolMode);
+  toolModeRef.current = toolMode;
+  const prevToolModeRef = useRef<CanvasToolMode>('select');
+
+  // Polygon draft state
+  const [polygonDraft, setPolygonDraft] = useState<PolygonDraft | null>(null);
+
+  // Door state (uncommitted edits)
+  const [editDoors, setEditDoors] = useState<Door[]>([]);
 
   const plan = useQuery<FloorPlan>({ queryKey: qk.floorPlan, queryFn: endpoints.getFloorPlan });
   const rooms = useQuery<{ items: Room[] }>({ queryKey: qk.rooms, queryFn: endpoints.listRooms });
@@ -31,8 +52,76 @@ export function FloorPlanPage() {
     active: mode === 'edit',
   });
 
+  const bgPhotoId = plan.data?.background_image_photo_id ?? null;
+  const backgroundImageUrl = bgPhotoId ? `/api/v1/photos/${bgPhotoId}` : null;
+
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadBg = useMutation({
+    mutationFn: async (files: FileList) => {
+      const { items } = await endpoints.uploadPhotos('floor_plan', 'singleton', files);
+      const photo = items[0];
+      if (!photo) throw new Error('Upload failed');
+
+      const dims = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const url = URL.createObjectURL(files[0]);
+        const img = new Image();
+        img.onload = () => { resolve({ w: img.naturalWidth, h: img.naturalHeight }); URL.revokeObjectURL(url); };
+        img.onerror = reject;
+        img.src = url;
+      });
+
+      const hasShapes =
+        (rooms.data?.items.length ?? 0) > 0 || (locs.data?.items.length ?? 0) > 0;
+    return endpoints.patchFloorPlan({
+        background_image_photo_id: photo.id,
+        ...(!hasShapes ? { width: dims.w, height: dims.h } : {}),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.floorPlan });
+      toast.success('Floor plan image updated');
+    },
+    onError: () => toast.error('Image upload failed'),
+  });
+
+  const removeBg = useMutation({
+    mutationFn: () => endpoints.patchFloorPlan({ background_image_photo_id: null }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.floorPlan });
+      toast.success('Background image removed');
+    },
+    onError: () => toast.error('Remove failed'),
+  });
+
+  // Space-bar temporary pan
+  useEffect(() => {
+    if (mode !== 'edit') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        prevToolModeRef.current = toolModeRef.current;
+        setToolMode('pan');
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setToolMode(prevToolModeRef.current);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [mode]);
+
   const save = useMutation({
-    mutationFn: () => endpoints.applyFloorPlanSession({ ops: session.toSessionOps() }),
+    mutationFn: () =>
+      endpoints.applyFloorPlanSession({
+        ops: session.toSessionOps(),
+        plan: { doors: editDoors },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.floorPlan });
       qc.invalidateQueries({ queryKey: qk.rooms });
@@ -62,7 +151,7 @@ export function FloorPlanPage() {
         : (rooms.data?.items ?? []).map((r) => ({
             id: r.id,
             name: r.name,
-            shape: toRect(r.shape_on_plan as Room['shape_on_plan']),
+            shape: r.shape_on_plan,
           })),
     locations:
       mode === 'edit'
@@ -71,7 +160,7 @@ export function FloorPlanPage() {
             id: l.id,
             name: l.name,
             room_id: l.room_id,
-            shape: toRect(l.shape_on_plan as Room['shape_on_plan']),
+            shape: l.shape_on_plan,
           })),
   };
 
@@ -93,31 +182,86 @@ export function FloorPlanPage() {
     }
   };
 
+  const handleEnterEditMode = () => {
+    setEditDoors(plan.data?.doors ?? []);
+    setToolMode('select');
+    setPolygonDraft(null);
+    setMode('edit');
+  };
+
+  const handleDiscard = () => {
+    setMode('view');
+    session.reset();
+    setErrors([]);
+    setEditDoors([]);
+    setPolygonDraft(null);
+    setToolMode('select');
+  };
+
+  const handleSelectTool = (newMode: CanvasToolMode, target?: 'room' | 'loc') => {
+    if (newMode === 'draw-polygon') {
+      setPolygonDraft({ vertices: [] });
+    } else {
+      setPolygonDraft(null);
+    }
+    setToolMode(newMode);
+    if (target) setDrawTarget(target);
+  };
+
+  const handleRectDraw = (shape: RectShape) => {
+    if (drawTarget === 'room') {
+      const id = session.addRoom();
+      session.updateRoom(id, { shape });
+      setToolMode('select');
+    } else if (drawTarget === 'loc') {
+      const roomId = session.selection?.kind === 'room' ? session.selection.id : null;
+      if (roomId) {
+        const id = session.addLocation(roomId);
+        session.updateLocation(id, { shape });
+        setToolMode('select');
+      }
+    }
+  };
+
+  const handleShapeMove = (kind: 'room' | 'loc', id: string, newShape: Shape) => {
+    if (kind === 'room') session.updateRoom(id, { shape: newShape });
+    else session.updateLocation(id, { shape: newShape });
+  };
+
+  const handleShapeResize = (kind: 'room' | 'loc', id: string, newShape: Shape) => {
+    if (kind === 'room') session.updateRoom(id, { shape: newShape });
+    else session.updateLocation(id, { shape: newShape });
+  };
+
+  const handlePolygonClick = (fp: [number, number]) => {
+    setPolygonDraft((prev) => ({
+      vertices: [...(prev?.vertices ?? []), fp],
+    }));
+  };
+
+  const handlePolygonClose = () => {
+    const vertices = polygonDraft?.vertices ?? [];
+    if (vertices.length < 3) return;
+    const id = session.addRoom();
+    session.updateRoom(id, { shape: { type: 'polygon', points: vertices } });
+    setPolygonDraft(null);
+    setToolMode('select');
+  };
+
+  const handleDoorPlace = (door: Omit<Door, 'id'>) => {
+    setEditDoors((prev) => [...prev, { ...door, id: generateDoorId() }]);
+  };
+
   return (
     <div className="stack">
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0 }}>Floor plan</h2>
         <div className="row">
           {mode === 'view' ? (
-            <button onClick={() => setMode('edit')}>Edit</button>
+            <button onClick={handleEnterEditMode}>Edit</button>
           ) : (
             <>
-              <button onClick={session.addRoom}>+ Room</button>
-              <button
-                onClick={() => selectedRoom && session.addLocation(selectedRoom.id)}
-                disabled={!selectedRoom}
-              >
-                + Location
-              </button>
-              <button
-                onClick={() => {
-                  setMode('view');
-                  session.reset();
-                  setErrors([]);
-                }}
-              >
-                Discard
-              </button>
+              <button onClick={handleDiscard}>Discard</button>
               <button
                 className="primary"
                 onClick={() => save.mutate()}
@@ -141,6 +285,47 @@ export function FloorPlanPage() {
         </div>
       ) : null}
 
+      {mode === 'edit' && (
+        <CanvasToolbar
+          toolMode={toolMode}
+          drawTarget={drawTarget}
+          drawLocDisabled={!selectedRoom}
+          onSelectTool={handleSelectTool}
+        />
+      )}
+
+      {/* Hidden file input */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        style={{ display: 'none' }}
+        onChange={(e) => { if (e.target.files?.length) uploadBg.mutate(e.target.files); e.target.value = ''; }}
+      />
+
+      {mode === 'edit' && (
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 13, color: 'var(--fg-muted)' }}>Background:</span>
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            disabled={uploadBg.isPending}
+          >
+            {backgroundImageUrl ? 'Change image' : 'Upload image'}
+          </button>
+          {backgroundImageUrl && (
+            <button onClick={() => removeBg.mutate()} disabled={removeBg.isPending}>
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+
+      {mode === 'view' && !backgroundImageUrl && (
+        <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: 0 }}>
+          No floor plan image. Click <strong>Edit</strong> to upload one.
+        </p>
+      )}
+
       <FloorPlanCanvas
         width={width}
         height={height}
@@ -148,7 +333,30 @@ export function FloorPlanPage() {
         locations={rendered.locations}
         selection={session.selection}
         onSelect={handleSelect}
+        onDeselect={mode === 'edit' ? () => session.setSelection(null) : undefined}
+        doors={mode === 'edit' ? editDoors : (plan.data?.doors ?? [])}
+        toolMode={mode === 'edit' ? toolMode : 'select'}
+        polygonDraft={mode === 'edit' ? polygonDraft : null}
+        onShapeMove={mode === 'edit' ? handleShapeMove : undefined}
+        onShapeResize={mode === 'edit' ? handleShapeResize : undefined}
+        onRectDraw={mode === 'edit' ? handleRectDraw : undefined}
+        onPolygonClick={mode === 'edit' ? handlePolygonClick : undefined}
+        onPolygonClose={mode === 'edit' ? handlePolygonClose : undefined}
+        onDoorPlace={mode === 'edit' ? handleDoorPlace : undefined}
+        backgroundImageUrl={backgroundImageUrl}
       />
+
+      {mode === 'edit' && (
+        <div className="row" style={{ gap: 8 }}>
+          <button onClick={session.addRoom}>+ Room</button>
+          <button
+            onClick={() => selectedRoom && session.addLocation(selectedRoom.id)}
+            disabled={!selectedRoom}
+          >
+            + Location
+          </button>
+        </div>
+      )}
 
       {mode === 'edit' && selectedRoom ? (
         <section className="card stack">
@@ -203,27 +411,4 @@ export function FloorPlanPage() {
       ) : null}
     </div>
   );
-}
-
-function toRect(s: Room['shape_on_plan']): {
-  type: 'rect';
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-} {
-  if (s.type === 'rect') return s;
-  const xs = s.points.map(([x]) => x);
-  const ys = s.points.map(([, y]) => y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  return {
-    type: 'rect',
-    x: minX,
-    y: minY,
-    w: Math.max(10, maxX - minX),
-    h: Math.max(10, maxY - minY),
-  };
 }

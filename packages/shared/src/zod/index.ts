@@ -95,12 +95,22 @@ export const locationPatchZ = locationCreateZ
   .extend({ base_updated_at: z.string().optional() })
   .strict();
 
+export const doorZ = z.object({
+  id: z.string(),
+  room_id: ID,
+  wall: z.enum(['north', 'south', 'east', 'west']),
+  t: z.number().finite().min(0).max(1),
+  width: POS,
+});
+export const doorsZ = z.array(doorZ);
+
 export const floorPlanPatchZ = z
   .object({
     name: NAME_60.optional(),
     width: POS.optional(),
     height: POS.optional(),
     background_image_photo_id: ID.nullable().optional(),
+    doors: doorsZ.optional(),
     base_updated_at: z.string().optional(),
   })
   .strict();

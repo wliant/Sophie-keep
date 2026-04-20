@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { FloorPlanEditOp, RectShape, Room, StorageLocation, Shape } from '@sophie/shared';
+import type { FloorPlanEditOp, Room, StorageLocation, Shape } from '@sophie/shared';
 import { boundsOf } from '@sophie/shared';
 
 export interface EditRoom {
   id: string;
   name: string;
-  shape: RectShape;
+  shape: Shape;
   isNew?: boolean;
 }
 
@@ -13,17 +13,11 @@ export interface EditLoc {
   id: string;
   room_id: string;
   name: string;
-  shape: RectShape;
+  shape: Shape;
   isNew?: boolean;
 }
 
 export type Selection = { kind: 'room' | 'loc'; id: string } | null;
-
-function toRect(s: Shape): RectShape {
-  if (s.type === 'rect') return s;
-  const b = boundsOf(s);
-  return { type: 'rect', x: b.x, y: b.y, w: Math.max(10, b.w), h: Math.max(10, b.h) };
-}
 
 function tempId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2)}`;
@@ -40,8 +34,8 @@ export interface UseEditSessionResult {
   locations: EditLoc[];
   selection: Selection;
   setSelection: (s: Selection) => void;
-  addRoom: () => void;
-  addLocation: (roomId: string) => void;
+  addRoom: () => string;
+  addLocation: (roomId: string) => string;
   updateRoom: (id: string, patch: Partial<EditRoom>) => void;
   updateLocation: (id: string, patch: Partial<EditLoc>) => void;
   removeRoom: (id: string) => void;
@@ -69,7 +63,7 @@ export function useEditSession({
       (initialRooms ?? []).map((r) => ({
         id: r.id,
         name: r.name,
-        shape: toRect(r.shape_on_plan),
+        shape: r.shape_on_plan,
       })),
     );
     setLocations(
@@ -77,14 +71,14 @@ export function useEditSession({
         id: l.id,
         room_id: l.room_id,
         name: l.name,
-        shape: toRect(l.shape_on_plan),
+        shape: l.shape_on_plan,
       })),
     );
     setRemovedRooms([]);
     setRemovedLocs([]);
   }, [active, initialRooms, initialLocs]);
 
-  const addRoom = useCallback(() => {
+  const addRoom = useCallback((): string => {
     const id = tempId('room');
     setRooms((prev) => [
       ...prev,
@@ -96,13 +90,14 @@ export function useEditSession({
       },
     ]);
     setSelection({ kind: 'room', id });
+    return id;
   }, []);
 
   const addLocation = useCallback(
-    (roomId: string) => {
+    (roomId: string): string => {
       const id = tempId('loc');
       const room = rooms.find((r) => r.id === roomId);
-      const base = room?.shape ?? { type: 'rect' as const, x: 30, y: 30, w: 80, h: 40 };
+      const b = room?.shape ? boundsOf(room.shape) : { x: 30, y: 30, w: 80, h: 40 };
       setLocations((prev) => [
         ...prev,
         {
@@ -111,15 +106,16 @@ export function useEditSession({
           name: `Location ${prev.length + 1}`,
           shape: {
             type: 'rect',
-            x: base.x + 10,
-            y: base.y + 10,
-            w: Math.min(80, Math.max(20, base.w - 20)),
-            h: Math.min(40, Math.max(20, base.h - 20)),
+            x: b.x + 10,
+            y: b.y + 10,
+            w: Math.min(80, Math.max(20, b.w - 20)),
+            h: Math.min(40, Math.max(20, b.h - 20)),
           },
           isNew: true,
         },
       ]);
       setSelection({ kind: 'loc', id });
+      return id;
     },
     [rooms],
   );
