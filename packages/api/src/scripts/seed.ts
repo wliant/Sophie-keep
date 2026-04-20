@@ -1,5 +1,6 @@
 import { config, ensureDirs } from '../config.js';
-import { openDb, runMigrations } from '../db/sqlite.js';
+import { openPool, getPool, runMigrations } from '../db/postgres.js';
+import { initS3, ensureBucket } from '../storage/s3.js';
 import { createType } from '../services/types-service.js';
 import { createRoom, createLocation } from '../services/locations-service.js';
 import { createItem } from '../services/items-service.js';
@@ -16,29 +17,37 @@ const ROOM_NAMES = ['Kitchen', 'Pantry', 'Garage', 'Bathroom', 'Closet'];
 
 async function main() {
   ensureDirs();
-  const db = openDb(config.dbPath);
-  runMigrations(db);
+  openPool(config.databaseUrl);
+  initS3(config.minioEndpoint, config.minioAccessKey, config.minioSecretKey, config.minioBucket);
+  await ensureBucket();
+  await runMigrations(getPool());
 
-  const types = ITEM_TYPES.map((t) => createType(db, t));
-  const rooms = ROOM_NAMES.map((name, i) =>
-    createRoom(db, {
-      name,
-      shape_on_plan: { type: 'rect', x: (i % 3) * 300, y: Math.floor(i / 3) * 300, w: 280, h: 280 },
-    }),
-  );
-  const locations = rooms.flatMap((room) =>
-    Array.from({ length: 3 }).map((_, j) =>
-      createLocation(db, {
-        name: `Shelf ${j + 1}`,
-        room_id: room.id,
-        shape_on_plan: {
-          type: 'rect',
-          x: (room.shape_on_plan as { x: number }).x + 10 + j * 90,
-          y: (room.shape_on_plan as { y: number }).y + 10,
-          w: 80,
-          h: 40,
-        },
+  const db = getPool();
+
+  const types = await Promise.all(ITEM_TYPES.map((t) => createType(db, t)));
+  const rooms = await Promise.all(
+    ROOM_NAMES.map((name, i) =>
+      createRoom(db, {
+        name,
+        shape_on_plan: { type: 'rect', x: (i % 3) * 300, y: Math.floor(i / 3) * 300, w: 280, h: 280 },
       }),
+    ),
+  );
+  const locations = await Promise.all(
+    rooms.flatMap((room) =>
+      Array.from({ length: 3 }).map((_, j) =>
+        createLocation(db, {
+          name: `Shelf ${j + 1}`,
+          room_id: room.id,
+          shape_on_plan: {
+            type: 'rect',
+            x: (room.shape_on_plan as { x: number }).x + 10 + j * 90,
+            y: (room.shape_on_plan as { y: number }).y + 10,
+            w: 80,
+            h: 40,
+          },
+        }),
+      ),
     ),
   );
 
@@ -54,7 +63,7 @@ async function main() {
     const base = itemNamePool[i % itemNamePool.length]!;
     const type = types[i % types.length]!;
     const loc = locations[i % locations.length]!;
-    createItem(db, {
+    await createItem(db, {
       name: `${base}${i < itemNamePool.length ? '' : ` #${Math.floor(i / itemNamePool.length)}`}`,
       item_type_id: type.id,
       storage_location_id: loc.id,

@@ -1,14 +1,12 @@
-import type Database from 'better-sqlite3';
+import { getPool } from '../db/postgres.js';
 import { purgeOldAutoChecks } from '../services/shopping-service.js';
 
-export function scheduleAutoCheckCleanup(db: Database.Database): () => void {
+export function scheduleAutoCheckCleanup(): () => void {
   const interval = setInterval(
     () => {
-      try {
-        purgeOldAutoChecks(db);
-      } catch {
+      purgeOldAutoChecks(getPool()).catch(() => {
         // ignore
-      }
+      });
     },
     60 * 60 * 1000,
   );

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { getDb } from '../db/sqlite.js';
+import { getPool } from '../db/postgres.js';
 import { quickAdd } from '../services/quick-add-service.js';
 import { enrichItem } from '../services/items-service.js';
 
@@ -16,10 +16,10 @@ const quickAddZ = z.object({
 export async function quickAddRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/v1/quick-add', async (req, reply) => {
     const body = quickAddZ.parse(req.body);
-    const result = quickAdd(getDb(), body);
+    const result = await quickAdd(getPool(), body);
     reply.status(result.created ? 201 : 200);
     return {
-      item: enrichItem(getDb(), result.item),
+      item: await enrichItem(getPool(), result.item),
       created: result.created,
       change: result.change,
     };

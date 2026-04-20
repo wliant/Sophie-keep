@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
 # Multi-stage image: compile once with full toolchain, run on a slim runtime.
-# better-sqlite3 and sharp both ship native bindings, so the build stage needs
-# a C/C++ toolchain + python to rebuild against the target Node version.
+# sharp ships native bindings, so the build stage needs a C/C++ toolchain + python.
 
 FROM node:20-bookworm AS build
 WORKDIR /app
 
-# Install build deps for native modules (better-sqlite3, sharp).
+# Install build deps for native modules (sharp).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        python3 make g++ \
@@ -43,7 +42,7 @@ RUN apt-get update \
        libvips \
        tini \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /data/photos /data/backups /data/logs \
+  && mkdir -p /data/backups /data/logs \
   && useradd --system --uid 10001 --home /app sophie \
   && chown -R sophie:sophie /app /data
 

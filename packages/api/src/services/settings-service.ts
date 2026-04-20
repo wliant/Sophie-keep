@@ -1,10 +1,11 @@
-import type Database from 'better-sqlite3';
 import type { Settings } from '@sophie/shared';
 import type { SettingsPatch } from '@sophie/shared';
+import type { Db } from '../db/postgres.js';
 import { clock } from '../util/clock.js';
 
-export function getSettings(db: Database.Database): Settings {
-  const row = db.prepare('SELECT * FROM settings WHERE id = 1').get() as Record<string, unknown>;
+export async function getSettings(db: Db): Promise<Settings> {
+  const { rows } = await db.query('SELECT * FROM settings WHERE id = 1');
+  const row = rows[0] as Record<string, unknown>;
   return {
     expiring_soon_window_days: row.expiring_soon_window_days as number,
     quick_add_default_type_id: (row.quick_add_default_type_id as string | null) ?? null,
@@ -16,8 +17,8 @@ export function getSettings(db: Database.Database): Settings {
   };
 }
 
-export function patchSettings(db: Database.Database, patch: SettingsPatch): Settings {
-  const current = getSettings(db);
+export async function patchSettings(db: Db, patch: SettingsPatch): Promise<Settings> {
+  const current = await getSettings(db);
   const merged = {
     expiring_soon_window_days:
       patch.expiring_soon_window_days ?? current.expiring_soon_window_days,
@@ -35,30 +36,32 @@ export function patchSettings(db: Database.Database, patch: SettingsPatch): Sett
         : patch.quick_add_default_unit,
   };
   const now = clock.nowIso();
-  db.prepare(
+  await db.query(
     `UPDATE settings SET
-       expiring_soon_window_days = ?,
-       quick_add_default_type_id = ?,
-       quick_add_default_location_id = ?,
-       quick_add_default_unit = ?,
-       updated_at = ?
+       expiring_soon_window_days = $1,
+       quick_add_default_type_id = $2,
+       quick_add_default_location_id = $3,
+       quick_add_default_unit = $4,
+       updated_at = $5
      WHERE id = 1`,
-  ).run(
-    merged.expiring_soon_window_days,
-    merged.quick_add_default_type_id,
-    merged.quick_add_default_location_id,
-    merged.quick_add_default_unit,
-    now,
+    [
+      merged.expiring_soon_window_days,
+      merged.quick_add_default_type_id,
+      merged.quick_add_default_location_id,
+      merged.quick_add_default_unit,
+      now,
+    ],
   );
   return getSettings(db);
 }
 
-export function setBackupStatus(
-  db: Database.Database,
+export async function setBackupStatus(
+  db: Db,
   status: 'ok' | 'failed',
   at: string,
-): void {
-  db.prepare(
-    `UPDATE settings SET last_backup_status = ?, last_backup_at = ?, updated_at = ? WHERE id = 1`,
-  ).run(status, at, clock.nowIso());
+): Promise<void> {
+  await db.query(
+    `UPDATE settings SET last_backup_status = $1, last_backup_at = $2, updated_at = $3 WHERE id = 1`,
+    [status, at, clock.nowIso()],
+  );
 }

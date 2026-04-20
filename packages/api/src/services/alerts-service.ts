@@ -14,7 +14,7 @@ export const IS_LOW_STOCK_SQL = `
 export const IS_EXPIRED_SQL = `
   CASE
     WHEN items.expiration_date IS NULL THEN 0
-    WHEN items.expiration_date < date('now') THEN 1
+    WHEN items.expiration_date < CURRENT_DATE::TEXT THEN 1
     ELSE 0
   END
 `;
@@ -23,8 +23,8 @@ export function isExpiringSoonSQL(windowDays: number): string {
   return `
     CASE
       WHEN items.expiration_date IS NULL THEN 0
-      WHEN items.expiration_date < date('now') THEN 0
-      WHEN items.expiration_date <= date('now', '+${windowDays} day') THEN 1
+      WHEN items.expiration_date < CURRENT_DATE::TEXT THEN 0
+      WHEN items.expiration_date <= (CURRENT_DATE + INTERVAL '${windowDays} days')::TEXT THEN 1
       ELSE 0
     END
   `;

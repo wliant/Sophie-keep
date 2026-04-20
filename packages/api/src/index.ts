@@ -1,14 +1,18 @@
 import { buildApp } from './app.js';
 import { config, ensureDirs } from './config.js';
-import { openDb, runMigrations, closeDb } from './db/sqlite.js';
+import { openPool, getPool, runMigrations, closePool } from './db/postgres.js';
+import { initS3, ensureBucket } from './storage/s3.js';
 import { scheduleDailyBackup } from './scheduler/daily-backup.js';
 import { scheduleAutoCheckCleanup } from './scheduler/auto-check-cleanup.js';
 import { isBindRoutable } from './util/bind.js';
 
 async function main(): Promise<void> {
   ensureDirs();
-  const db = openDb(config.dbPath);
-  runMigrations(db);
+
+  openPool(config.databaseUrl);
+  initS3(config.minioEndpoint, config.minioAccessKey, config.minioSecretKey, config.minioBucket);
+  await ensureBucket();
+  await runMigrations(getPool());
 
   const app = await buildApp();
 
@@ -19,8 +23,8 @@ async function main(): Promise<void> {
     );
   }
 
-  const stopDaily = scheduleDailyBackup(db, app.log);
-  const stopAuto = scheduleAutoCheckCleanup(db);
+  const stopDaily = scheduleDailyBackup(app.log);
+  const stopAuto = scheduleAutoCheckCleanup();
 
   try {
     await app.listen({ port: config.port, host: config.bind });
@@ -39,7 +43,7 @@ async function main(): Promise<void> {
     } catch (e) {
       app.log.error({ err: e }, 'error closing app');
     }
-    closeDb();
+    await closePool();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

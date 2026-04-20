@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import type {
   ShoppingListEntry,
   ShoppingListAutoEntry,
@@ -6,10 +5,11 @@ import type {
   ItemWithDerived,
   QuantityChange,
 } from '@sophie/shared';
+import type { Db, Pool } from '../db/postgres.js';
+import { tx } from '../db/postgres.js';
 import { clock } from '../util/clock.js';
 import { ulid } from '../util/ulid.js';
 import { notFound, conflictStale, validation } from '../errors.js';
-import { tx } from '../db/sqlite.js';
 import { getSettings } from './settings-service.js';
 import {
   EFFECTIVE_THRESHOLD_SQL,
@@ -24,32 +24,30 @@ export interface ShoppingListView {
   manual: ShoppingListManualEntry[];
 }
 
-function buildAutoEntries(db: Database.Database): ShoppingListAutoEntry[] {
-  const settings = getSettings(db);
+async function buildAutoEntries(db: Db): Promise<ShoppingListAutoEntry[]> {
+  const settings = await getSettings(db);
   const today = clock.todayIso();
   const expSoonSql = isExpiringSoonSQL(settings.expiring_soon_window_days);
 
-  const rows = db
-    .prepare(
-      `SELECT
-         items.*,
-         item_types.name AS type_name,
-         storage_locations.name AS location_name,
-         rooms.name AS room_name,
-         ${IS_LOW_STOCK_SQL} AS is_low_stock,
-         ${IS_EXPIRED_SQL} AS is_expired,
-         ${expSoonSql} AS is_expiring_soon,
-         ${EFFECTIVE_THRESHOLD_SQL} AS effective_low_stock_threshold,
-         COALESCE(acs.checked, 0) AS auto_checked
-       FROM items
-       LEFT JOIN item_types ON item_types.id = items.item_type_id
-       LEFT JOIN storage_locations ON storage_locations.id = items.storage_location_id
-       LEFT JOIN rooms ON rooms.id = storage_locations.room_id
-       LEFT JOIN auto_entry_check_state acs ON acs.item_id = items.id
-       WHERE (${IS_LOW_STOCK_SQL} = 1 OR ${IS_EXPIRED_SQL} = 1)
-       ORDER BY item_types.name COLLATE NOCASE, items.name COLLATE NOCASE`,
-    )
-    .all() as Array<Record<string, unknown>>;
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT
+       items.*,
+       item_types.name AS type_name,
+       storage_locations.name AS location_name,
+       rooms.name AS room_name,
+       ${IS_LOW_STOCK_SQL} AS is_low_stock,
+       ${IS_EXPIRED_SQL} AS is_expired,
+       ${expSoonSql} AS is_expiring_soon,
+       ${EFFECTIVE_THRESHOLD_SQL} AS effective_low_stock_threshold,
+       COALESCE(acs.checked, 0) AS auto_checked
+     FROM items
+     LEFT JOIN item_types ON item_types.id = items.item_type_id
+     LEFT JOIN storage_locations ON storage_locations.id = items.storage_location_id
+     LEFT JOIN rooms ON rooms.id = storage_locations.room_id
+     LEFT JOIN auto_entry_check_state acs ON acs.item_id = items.id
+     WHERE (${IS_LOW_STOCK_SQL} = 1 OR ${IS_EXPIRED_SQL} = 1)
+     ORDER BY LOWER(item_types.name), LOWER(items.name)`,
+  );
 
   return rows.map((r) => {
     const photoIds = JSON.parse((r.photo_ids as string) || '[]') as string[];
@@ -61,10 +59,10 @@ function buildAutoEntries(db: Database.Database): ShoppingListAutoEntry[] {
       name: r.name as string,
       item_type_id: r.item_type_id as string,
       storage_location_id: r.storage_location_id as string,
-      quantity: r.quantity as number,
+      quantity: Number(r.quantity),
       unit: r.unit as string,
       expiration_date: (r.expiration_date as string | null) ?? null,
-      low_stock_threshold: (r.low_stock_threshold as number | null) ?? null,
+      low_stock_threshold: r.low_stock_threshold != null ? Number(r.low_stock_threshold) : null,
       notes: (r.notes as string | null) ?? null,
       photo_ids: photoIds,
       created_at: r.created_at as string,
@@ -72,7 +70,8 @@ function buildAutoEntries(db: Database.Database): ShoppingListAutoEntry[] {
       is_low_stock: lowStock,
       is_expired: expired,
       is_expiring_soon: Boolean(r.is_expiring_soon),
-      effective_low_stock_threshold: (r.effective_low_stock_threshold as number | null) ?? null,
+      effective_low_stock_threshold:
+        r.effective_low_stock_threshold != null ? Number(r.effective_low_stock_threshold) : null,
       type_name: (r.type_name as string) ?? undefined,
       location_name: (r.location_name as string) ?? undefined,
       room_name: (r.room_name as string) ?? undefined,
@@ -105,13 +104,11 @@ function daysSince(date: string, today: string): number {
   return Math.round((b - a) / 86400000);
 }
 
-export function getShoppingList(db: Database.Database): ShoppingListView {
-  const auto = buildAutoEntries(db);
-  const manualRows = db
-    .prepare(
-      `SELECT * FROM shopping_entries ORDER BY checked ASC, label COLLATE NOCASE ASC`,
-    )
-    .all() as ShoppingListEntry[];
+export async function getShoppingList(db: Db): Promise<ShoppingListView> {
+  const auto = await buildAutoEntries(db);
+  const { rows: manualRows } = await db.query<ShoppingListEntry>(
+    `SELECT * FROM shopping_entries ORDER BY checked ASC, LOWER(label) ASC`,
+  );
   const manual: ShoppingListManualEntry[] = manualRows.map((r) => ({
     kind: 'manual',
     entry: { ...r, checked: Boolean(r.checked) },
@@ -119,66 +116,67 @@ export function getShoppingList(db: Database.Database): ShoppingListView {
   return { auto, manual };
 }
 
-export function createManualEntry(db: Database.Database, label: string): ShoppingListEntry {
+export async function createManualEntry(db: Db, label: string): Promise<ShoppingListEntry> {
   const id = ulid();
   const now = clock.nowIso();
-  db.prepare(
-    `INSERT INTO shopping_entries (id, label, checked, created_at, updated_at) VALUES (?,?,?,?,?)`,
-  ).run(id, label, 0, now, now);
+  await db.query(
+    `INSERT INTO shopping_entries (id, label, checked, created_at, updated_at) VALUES ($1,$2,$3,$4,$5)`,
+    [id, label, 0, now, now],
+  );
   return { id, label, checked: false, created_at: now, updated_at: now };
 }
 
-export function patchManualEntry(
-  db: Database.Database,
+export async function patchManualEntry(
+  db: Db,
   id: string,
   patch: { label?: string; checked?: boolean; base_updated_at?: string },
-): ShoppingListEntry {
-  const row = db.prepare('SELECT * FROM shopping_entries WHERE id = ?').get(id) as
-    | ShoppingListEntry
-    | undefined;
+): Promise<ShoppingListEntry> {
+  const { rows } = await db.query<ShoppingListEntry>(
+    'SELECT * FROM shopping_entries WHERE id = $1',
+    [id],
+  );
+  const row = rows[0];
   if (!row) throw notFound('shopping_entry');
   if (patch.base_updated_at && patch.base_updated_at !== row.updated_at) throw conflictStale();
   const label = patch.label ?? row.label;
   const checked = patch.checked ?? Boolean(row.checked);
   const now = clock.nowIso();
-  db.prepare('UPDATE shopping_entries SET label=?, checked=?, updated_at=? WHERE id=?').run(
+  await db.query('UPDATE shopping_entries SET label=$1, checked=$2, updated_at=$3 WHERE id=$4', [
     label,
     checked ? 1 : 0,
     now,
     id,
-  );
+  ]);
   return { id, label, checked, created_at: row.created_at, updated_at: now };
 }
 
-export function deleteManualEntry(db: Database.Database, id: string): void {
-  const res = db.prepare('DELETE FROM shopping_entries WHERE id = ?').run(id);
-  if (res.changes === 0) throw notFound('shopping_entry');
+export async function deleteManualEntry(db: Db, id: string): Promise<void> {
+  const result = await db.query('DELETE FROM shopping_entries WHERE id = $1', [id]);
+  if ((result.rowCount ?? 0) === 0) throw notFound('shopping_entry');
 }
 
-export function setAutoCheck(
-  db: Database.Database,
-  itemId: string,
-  checked: boolean,
-): void {
+export async function setAutoCheck(db: Db, itemId: string, checked: boolean): Promise<void> {
   const now = clock.nowIso();
-  db.prepare(
-    `INSERT INTO auto_entry_check_state (item_id, checked, updated_at) VALUES (?,?,?)
-     ON CONFLICT(item_id) DO UPDATE SET checked=excluded.checked, updated_at=excluded.updated_at`,
-  ).run(itemId, checked ? 1 : 0, now);
+  await db.query(
+    `INSERT INTO auto_entry_check_state (item_id, checked, updated_at) VALUES ($1,$2,$3)
+     ON CONFLICT(item_id) DO UPDATE SET checked=EXCLUDED.checked, updated_at=EXCLUDED.updated_at`,
+    [itemId, checked ? 1 : 0, now],
+  );
 }
 
-export function clearChecked(db: Database.Database): void {
-  tx(db, () => {
-    db.prepare('DELETE FROM auto_entry_check_state').run();
-    db.prepare("UPDATE shopping_entries SET checked = 0, updated_at = ? WHERE checked = 1").run(
-      clock.nowIso(),
+export async function clearChecked(db: Db): Promise<void> {
+  await tx(db as Pool, async (client) => {
+    await client.query('DELETE FROM auto_entry_check_state');
+    await client.query(
+      "UPDATE shopping_entries SET checked = 0, updated_at = $1 WHERE checked = 1",
+      [clock.nowIso()],
     );
   });
 }
 
-export function purgeOldAutoChecks(db: Database.Database, olderThanMs = 24 * 3600 * 1000): void {
+export async function purgeOldAutoChecks(db: Db, olderThanMs = 24 * 3600 * 1000): Promise<void> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
-  db.prepare('DELETE FROM auto_entry_check_state WHERE updated_at < ?').run(cutoff);
+  await db.query('DELETE FROM auto_entry_check_state WHERE updated_at < $1', [cutoff]);
 }
 
 export interface RestockResult {
@@ -192,8 +190,8 @@ export interface RestockResult {
   manual_deleted: number;
 }
 
-export function confirmRestock(
-  db: Database.Database,
+export async function confirmRestock(
+  db: Db,
   input: {
     items: Array<{
       item_id: string;
@@ -204,7 +202,7 @@ export function confirmRestock(
     }>;
     manual_entry_ids?: string[];
   },
-): RestockResult {
+): Promise<RestockResult> {
   const outcomes: RestockResult['item_outcomes'] = [];
   let manualDeleted = 0;
 
@@ -212,14 +210,14 @@ export function confirmRestock(
     try {
       const action = req.action ?? 'restock';
       if (action === 'delete_item') {
-        deleteItem(db, req.item_id);
+        await deleteItem(db, req.item_id);
         outcomes.push({ item_id: req.item_id, ok: true });
         continue;
       }
       if (action === 'update_expiry') {
-        patchItem(db, req.item_id, { expiration_date: req.new_expiration_date ?? null });
+        await patchItem(db, req.item_id, { expiration_date: req.new_expiration_date ?? null });
         if (req.new_quantity != null) {
-          applyQuantityOp(db, req.item_id, 'set', req.new_quantity, 'shopping_restock');
+          await applyQuantityOp(db, req.item_id, 'set', req.new_quantity, 'shopping_restock');
         }
         outcomes.push({ item_id: req.item_id, ok: true });
         continue;
@@ -227,17 +225,17 @@ export function confirmRestock(
       // restock default
       let amount = req.restock_amount;
       if (amount == null) {
-        const row = db
-          .prepare(
-            `SELECT items.quantity, COALESCE(items.low_stock_threshold, item_types.default_low_stock_threshold) AS effective
-             FROM items LEFT JOIN item_types ON item_types.id = items.item_type_id WHERE items.id = ?`,
-          )
-          .get(req.item_id) as { quantity: number; effective: number | null } | undefined;
+        const { rows } = await db.query<{ quantity: number; effective: number | null }>(
+          `SELECT items.quantity, COALESCE(items.low_stock_threshold, item_types.default_low_stock_threshold) AS effective
+           FROM items LEFT JOIN item_types ON item_types.id = items.item_type_id WHERE items.id = $1`,
+          [req.item_id],
+        );
+        const row = rows[0];
         if (!row) throw notFound('item');
-        amount = Math.max(1, (row.effective ?? 0) + 1 - row.quantity);
+        amount = Math.max(1, (row.effective ?? 0) + 1 - Number(row.quantity));
       }
       if (amount <= 0) amount = 1;
-      const { change } = applyQuantityOp(db, req.item_id, 'increment', amount, 'shopping_restock');
+      const { change } = await applyQuantityOp(db, req.item_id, 'increment', amount, 'shopping_restock');
       outcomes.push({
         item_id: req.item_id,
         ok: true,
@@ -254,18 +252,16 @@ export function confirmRestock(
   }
 
   if (input.manual_entry_ids?.length) {
-    const placeholders = input.manual_entry_ids.map(() => '?').join(',');
-    const res = db
-      .prepare(`DELETE FROM shopping_entries WHERE id IN (${placeholders})`)
-      .run(...input.manual_entry_ids);
-    manualDeleted = res.changes;
+    const ids = input.manual_entry_ids;
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const res = await db.query(`DELETE FROM shopping_entries WHERE id IN (${placeholders})`, ids);
+    manualDeleted = res.rowCount ?? 0;
   }
 
-  // Clear auto checks for items that were processed
   const processed = input.items.map((i) => i.item_id);
   if (processed.length) {
-    const placeholders = processed.map(() => '?').join(',');
-    db.prepare(`DELETE FROM auto_entry_check_state WHERE item_id IN (${placeholders})`).run(...processed);
+    const placeholders = processed.map((_, i) => `$${i + 1}`).join(',');
+    await db.query(`DELETE FROM auto_entry_check_state WHERE item_id IN (${placeholders})`, processed);
   }
 
   void validation; // reserved

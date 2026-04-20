@@ -1,38 +1,13 @@
-import type Database from 'better-sqlite3';
 import type { ItemWithDerived, ItemSearchQuery, PaginatedResponse } from '@sophie/shared';
+import type { Db } from '../db/postgres.js';
+import { pgParams } from '../db/postgres.js';
 import { getSettings } from './settings-service.js';
-import { clock } from '../util/clock.js';
 import {
   EFFECTIVE_THRESHOLD_SQL,
   IS_EXPIRED_SQL,
   IS_LOW_STOCK_SQL,
   isExpiringSoonSQL,
 } from './alerts-service.js';
-
-// Registry of supported sort keys. Adding a new sort = one entry here.
-// `order(ftsQ, params)` returns the ORDER BY clause and may push extra
-// placeholders into `params` (used for relevance which re-uses the FTS query).
-const SORTS: Record<
-  NonNullable<ItemSearchQuery['sort']>,
-  { order: (ftsQ: string | null, params: unknown[]) => string }
-> = {
-  relevance: {
-    order: (ftsQ, params) => {
-      if (!ftsQ) return 'ORDER BY items.updated_at DESC';
-      params.push(ftsQ);
-      return 'ORDER BY (SELECT rank FROM items_fts WHERE items_fts MATCH ? AND items_fts.rowid = items.rowid) ASC, items.name COLLATE NOCASE';
-    },
-  },
-  name_asc: { order: () => 'ORDER BY items.name COLLATE NOCASE ASC' },
-  name_desc: { order: () => 'ORDER BY items.name COLLATE NOCASE DESC' },
-  updated_desc: { order: () => 'ORDER BY items.updated_at DESC' },
-  expiration_asc: {
-    order: () =>
-      'ORDER BY CASE WHEN items.expiration_date IS NULL THEN 1 ELSE 0 END, items.expiration_date ASC',
-  },
-  quantity_asc: { order: () => 'ORDER BY items.quantity ASC' },
-  quantity_desc: { order: () => 'ORDER BY items.quantity DESC' },
-};
 
 function toArray(v: string | string[] | undefined): string[] {
   if (!v) return [];
@@ -47,21 +22,19 @@ function toBool(v: boolean | 'true' | 'false' | undefined): boolean | undefined 
 
 function ftsQueryFromText(q: string): string | null {
   const tokens = q
-    .replace(/["\\]/g, ' ')
+    .replace(/['"\\]/g, ' ')
     .split(/\s+/)
     .map((t) => t.trim())
     .filter(Boolean);
   if (tokens.length === 0) return null;
-  // prefix per word; match any occurrence (implicit AND in FTS5)
-  return tokens.map((t) => `"${t}"*`).join(' ');
+  return tokens.join(' ');
 }
 
-export function searchItems(
-  db: Database.Database,
+export async function searchItems(
+  db: Db,
   query: ItemSearchQuery,
-): PaginatedResponse<ItemWithDerived> {
-  const settings = getSettings(db);
-  const today = clock.todayIso();
+): Promise<PaginatedResponse<ItemWithDerived>> {
+  const settings = await getSettings(db);
   const pageSize = Math.min(200, Math.max(1, query.page_size ?? 50));
   const page = Math.max(1, query.page ?? 1);
   const offset = (page - 1) * pageSize;
@@ -72,35 +45,25 @@ export function searchItems(
   const hasPhoto = toBool(query.has_photo);
   const sort = query.sort ?? (query.q ? 'relevance' : 'updated_desc');
 
-  // Keep WHERE-clause params and ORDER-BY params separate so COUNT and
-  // SELECT each get exactly the params they reference. This avoids silent
-  // misalignment when sort keys introduce their own placeholders.
+  const p = pgParams();
   const where: string[] = [];
-  const whereParams: unknown[] = [];
-  const orderParams: unknown[] = [];
-  const ftsQ = query.q && query.q.trim().length > 0 ? ftsQueryFromText(query.q) : null;
+  const ftsText = query.q && query.q.trim().length > 0 ? ftsQueryFromText(query.q) : null;
 
   if (typeIds.length) {
-    where.push(`items.item_type_id IN (${typeIds.map(() => '?').join(',')})`);
-    whereParams.push(...typeIds);
+    where.push(`items.item_type_id IN (${p.addAll(typeIds)})`);
   }
   if (locationIds.length) {
-    where.push(`items.storage_location_id IN (${locationIds.map(() => '?').join(',')})`);
-    whereParams.push(...locationIds);
+    where.push(`items.storage_location_id IN (${p.addAll(locationIds)})`);
   }
   if (roomIds.length) {
     where.push(
-      `items.storage_location_id IN (SELECT id FROM storage_locations WHERE room_id IN (${roomIds
-        .map(() => '?')
-        .join(',')}))`,
+      `items.storage_location_id IN (SELECT id FROM storage_locations WHERE room_id IN (${p.addAll(roomIds)}))`,
     );
-    whereParams.push(...roomIds);
   }
   if (query.expires_within_days != null) {
     where.push(
-      `items.expiration_date IS NOT NULL AND items.expiration_date <= date('now', '+' || ? || ' day')`,
+      `items.expiration_date IS NOT NULL AND items.expiration_date <= (CURRENT_DATE + (${p.add(query.expires_within_days)} * INTERVAL '1 day'))::TEXT`,
     );
-    whereParams.push(query.expires_within_days);
   }
   if (lowStockOnly) {
     where.push(`${IS_LOW_STOCK_SQL} = 1`);
@@ -110,15 +73,42 @@ export function searchItems(
   } else if (hasPhoto === false) {
     where.push(`items.photo_ids = '[]'`);
   }
-  if (ftsQ) {
-    where.push('items.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)');
-    whereParams.push(ftsQ);
+  if (ftsText) {
+    where.push(`items.search_vector @@ plainto_tsquery('english', ${p.add(ftsText)})`);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  // Snapshot params for COUNT query (before ORDER BY params are added)
+  const countValues = p.values();
 
-  const sortConfig = SORTS[sort];
-  const orderSql = sortConfig.order(ftsQ, orderParams);
+  const expSoonSql = isExpiringSoonSQL(settings.expiring_soon_window_days);
+
+  let orderSql: string;
+  if (sort === 'relevance') {
+    if (ftsText) {
+      const ftsParam = p.add(ftsText);
+      orderSql = `ORDER BY ts_rank(items.search_vector, plainto_tsquery('english', ${ftsParam})) DESC, LOWER(items.name)`;
+    } else {
+      orderSql = 'ORDER BY items.updated_at DESC';
+    }
+  } else if (sort === 'name_asc') {
+    orderSql = 'ORDER BY LOWER(items.name) ASC';
+  } else if (sort === 'name_desc') {
+    orderSql = 'ORDER BY LOWER(items.name) DESC';
+  } else if (sort === 'updated_desc') {
+    orderSql = 'ORDER BY items.updated_at DESC';
+  } else if (sort === 'expiration_asc') {
+    orderSql = 'ORDER BY CASE WHEN items.expiration_date IS NULL THEN 1 ELSE 0 END, items.expiration_date ASC';
+  } else if (sort === 'quantity_asc') {
+    orderSql = 'ORDER BY items.quantity ASC';
+  } else if (sort === 'quantity_desc') {
+    orderSql = 'ORDER BY items.quantity DESC';
+  } else {
+    orderSql = 'ORDER BY items.updated_at DESC';
+  }
+
+  const limitParam = p.add(pageSize);
+  const offsetParam = p.add(offset);
 
   const baseJoin = `
     FROM items
@@ -128,29 +118,27 @@ export function searchItems(
     ${whereSql}
   `;
 
-  const countRow = db.prepare(`SELECT COUNT(*) AS n ${baseJoin}`).get(...whereParams) as
-    | { n: number }
-    | undefined;
-  const total = countRow?.n ?? 0;
+  const { rows: countRows } = await db.query<{ n: string }>(
+    `SELECT COUNT(*) AS n ${baseJoin}`,
+    countValues,
+  );
+  const total = Number(countRows[0]?.n ?? 0);
 
-  const expSoonSql = isExpiringSoonSQL(settings.expiring_soon_window_days);
-
-  const rows = db
-    .prepare(
-      `SELECT
-         items.*,
-         item_types.name AS type_name,
-         storage_locations.name AS location_name,
-         rooms.name AS room_name,
-         ${IS_LOW_STOCK_SQL} AS is_low_stock,
-         ${IS_EXPIRED_SQL} AS is_expired,
-         ${expSoonSql} AS is_expiring_soon,
-         ${EFFECTIVE_THRESHOLD_SQL} AS effective_low_stock_threshold
-       ${baseJoin}
-       ${orderSql}
-       LIMIT ? OFFSET ?`,
-    )
-    .all(...whereParams, ...orderParams, pageSize, offset) as Array<Record<string, unknown>>;
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT
+       items.*,
+       item_types.name AS type_name,
+       storage_locations.name AS location_name,
+       rooms.name AS room_name,
+       ${IS_LOW_STOCK_SQL} AS is_low_stock,
+       ${IS_EXPIRED_SQL} AS is_expired,
+       ${expSoonSql} AS is_expiring_soon,
+       ${EFFECTIVE_THRESHOLD_SQL} AS effective_low_stock_threshold
+     ${baseJoin}
+     ${orderSql}
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
+    p.values(),
+  );
 
   const items: ItemWithDerived[] = rows.map((r) => {
     const photoIds = JSON.parse((r.photo_ids as string) || '[]') as string[];
@@ -160,10 +148,10 @@ export function searchItems(
       name: r.name as string,
       item_type_id: r.item_type_id as string,
       storage_location_id: r.storage_location_id as string,
-      quantity: r.quantity as number,
+      quantity: Number(r.quantity),
       unit: r.unit as string,
       expiration_date: (r.expiration_date as string | null) ?? null,
-      low_stock_threshold: (r.low_stock_threshold as number | null) ?? null,
+      low_stock_threshold: r.low_stock_threshold != null ? Number(r.low_stock_threshold) : null,
       notes: (r.notes as string | null) ?? null,
       photo_ids: photoIds,
       created_at: r.created_at as string,
@@ -171,7 +159,8 @@ export function searchItems(
       is_low_stock: Boolean(r.is_low_stock),
       is_expired: Boolean(r.is_expired),
       is_expiring_soon: Boolean(r.is_expiring_soon),
-      effective_low_stock_threshold: (r.effective_low_stock_threshold as number | null) ?? null,
+      effective_low_stock_threshold:
+        r.effective_low_stock_threshold != null ? Number(r.effective_low_stock_threshold) : null,
       type_name: (r.type_name as string) ?? undefined,
       location_name: (r.location_name as string) ?? undefined,
       room_name: (r.room_name as string) ?? undefined,
@@ -179,7 +168,6 @@ export function searchItems(
     };
   });
 
-  void today;
   return {
     items,
     page,
@@ -189,55 +177,63 @@ export function searchItems(
   };
 }
 
-export function autocompleteItems(
-  db: Database.Database,
+export async function autocompleteItems(
+  db: Db,
   q: string,
   limit = 5,
-): Array<{
-  id: string;
-  name: string;
-  type_name: string | null;
-  location_name: string | null;
-  room_name: string | null;
-  quantity: number;
-  unit: string;
-}> {
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    type_name: string | null;
+    location_name: string | null;
+    room_name: string | null;
+    quantity: number;
+    unit: string;
+  }>
+> {
   const trimmed = q.trim();
   if (!trimmed) return [];
-  const ftsQ = ftsQueryFromText(trimmed);
+  const ftsText = ftsQueryFromText(trimmed);
   const exact = trimmed.toLowerCase();
   const prefix = exact + '%';
-  const params: unknown[] = [exact, prefix];
+
+  const p = pgParams();
+  const exactParam = p.add(exact);
+  const prefixParam = p.add(prefix);
+
   let where = '1=1';
-  if (ftsQ) {
-    where = 'items.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)';
-    params.push(ftsQ);
+  if (ftsText) {
+    where = `items.search_vector @@ plainto_tsquery('english', ${p.add(ftsText)})`;
   }
-  const rows = db
-    .prepare(
-      `SELECT items.id, items.name, items.quantity, items.unit,
-              item_types.name AS type_name,
-              storage_locations.name AS location_name,
-              rooms.name AS room_name,
-              CASE WHEN LOWER(items.name) = ? THEN 0
-                   WHEN LOWER(items.name) LIKE ? THEN 1
-                   ELSE 2 END AS match_rank
-       FROM items
-       LEFT JOIN item_types ON item_types.id = items.item_type_id
-       LEFT JOIN storage_locations ON storage_locations.id = items.storage_location_id
-       LEFT JOIN rooms ON rooms.id = storage_locations.room_id
-       WHERE ${where}
-       ORDER BY match_rank ASC, items.updated_at DESC
-       LIMIT ?`,
-    )
-    .all(...params, limit) as Array<Record<string, unknown>>;
+
+  const limitParam = p.add(limit);
+
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT items.id, items.name, items.quantity, items.unit,
+            item_types.name AS type_name,
+            storage_locations.name AS location_name,
+            rooms.name AS room_name,
+            CASE WHEN LOWER(items.name) = ${exactParam} THEN 0
+                 WHEN LOWER(items.name) LIKE ${prefixParam} THEN 1
+                 ELSE 2 END AS match_rank
+     FROM items
+     LEFT JOIN item_types ON item_types.id = items.item_type_id
+     LEFT JOIN storage_locations ON storage_locations.id = items.storage_location_id
+     LEFT JOIN rooms ON rooms.id = storage_locations.room_id
+     WHERE ${where}
+     ORDER BY match_rank ASC, items.updated_at DESC
+     LIMIT ${limitParam}`,
+    p.values(),
+  );
+
   return rows.map((r) => ({
     id: r.id as string,
     name: r.name as string,
     type_name: (r.type_name as string) ?? null,
     location_name: (r.location_name as string) ?? null,
     room_name: (r.room_name as string) ?? null,
-    quantity: r.quantity as number,
+    quantity: Number(r.quantity),
     unit: r.unit as string,
   }));
 }

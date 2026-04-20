@@ -1,20 +1,20 @@
-import type Database from 'better-sqlite3';
 import type { FastifyBaseLogger } from 'fastify';
+import { getPool } from '../db/postgres.js';
 import { config } from '../config.js';
 import { createBackup } from '../services/backup-service.js';
 import { setBackupStatus } from '../services/settings-service.js';
 import { clock } from '../util/clock.js';
 
-export function scheduleDailyBackup(db: Database.Database, log: FastifyBaseLogger): () => void {
+export function scheduleDailyBackup(log: FastifyBaseLogger): () => void {
   let timer: NodeJS.Timeout | null = null;
 
   async function run(): Promise<void> {
     try {
-      await createBackup(db);
+      await createBackup(getPool());
       log.info('daily backup completed');
     } catch (e) {
       log.error({ err: e }, 'daily backup failed');
-      setBackupStatus(db, 'failed', clock.nowIso());
+      await setBackupStatus(getPool(), 'failed', clock.nowIso());
     }
     schedule();
   }

@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -7,8 +6,9 @@ import { pipeline } from 'node:stream/promises';
 import tar from 'tar-stream';
 import { APP_VERSION, SCHEMA_VERSION } from '@sophie/shared';
 import type { BackupManifest, BackupRecord } from '@sophie/shared';
+import type { Db, Pool } from '../db/postgres.js';
+import { tx } from '../db/postgres.js';
 import { clock } from '../util/clock.js';
-import { ulid } from '../util/ulid.js';
 import { config } from '../config.js';
 import {
   backupChecksumMismatch,
@@ -17,6 +17,7 @@ import {
   schemaMismatch,
 } from '../errors.js';
 import { setBackupStatus } from './settings-service.js';
+import { listPrefix, getObject, putObject } from '../storage/s3.js';
 
 const TABLES = [
   'settings',
@@ -30,24 +31,17 @@ const TABLES = [
   'shopping_entries',
 ];
 
-function walkFiles(dir: string, base = dir): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkFiles(full, base));
-    else out.push(path.relative(base, full));
-  }
-  return out;
-}
-
 function writeTarEntry(pack: tar.Pack, name: string, buf: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
     pack.entry({ name, size: buf.length }, buf, (err) => (err ? reject(err) : resolve()));
   });
 }
 
-function computeChecksum(manifestWithoutChecksum: Omit<BackupManifest, 'checksum'>, data: Buffer, photoHashes: string[]): string {
+function computeChecksum(
+  manifestWithoutChecksum: Omit<BackupManifest, 'checksum'>,
+  data: Buffer,
+  photoHashes: string[],
+): string {
   const h = createHash('sha256');
   h.update(JSON.stringify(manifestWithoutChecksum));
   h.update(data);
@@ -55,7 +49,7 @@ function computeChecksum(manifestWithoutChecksum: Omit<BackupManifest, 'checksum
   return h.digest('hex');
 }
 
-export async function createBackup(db: Database.Database): Promise<BackupRecord> {
+export async function createBackup(db: Db): Promise<BackupRecord> {
   fs.mkdirSync(config.backupRoot, { recursive: true });
   const timestamp = clock.nowIso();
   const filename = `backup_${timestamp.replace(/[:.]/g, '-')}.tar.gz`;
@@ -67,7 +61,8 @@ export async function createBackup(db: Database.Database): Promise<BackupRecord>
   const photoHashes: string[] = [];
 
   for (const tableName of TABLES) {
-    entityData[tableName] = db.prepare(`SELECT * FROM ${tableName}`).all();
+    const { rows } = await db.query(`SELECT * FROM ${tableName}`);
+    entityData[tableName] = rows;
   }
 
   const photos = entityData['photos'] as Array<{ file_path: string; id: string }>;
@@ -85,17 +80,18 @@ export async function createBackup(db: Database.Database): Promise<BackupRecord>
 
   const dataBuffer = Buffer.from(JSON.stringify(entityData), 'utf8');
 
-  // Hash photo files for checksum
+  // Hash photo objects in S3 for checksum
   for (const p of photos) {
-    if (!fs.existsSync(p.file_path)) {
+    const keys = await listPrefix(p.file_path);
+    if (keys.length === 0) {
       photoHashes.push(`missing:${p.id}`);
       continue;
     }
-    const files = walkFiles(p.file_path);
     const h = createHash('sha256');
-    for (const f of files.sort()) {
-      h.update(f);
-      h.update(fs.readFileSync(path.join(p.file_path, f)));
+    for (const key of keys.sort()) {
+      const relPath = key.slice(p.file_path.length);
+      h.update(relPath);
+      h.update(await getObject(key));
     }
     photoHashes.push(`${p.id}:${h.digest('hex')}`);
   }
@@ -112,11 +108,11 @@ export async function createBackup(db: Database.Database): Promise<BackupRecord>
   await writeTarEntry(pack, 'manifest.json', Buffer.from(JSON.stringify(manifest, null, 2)));
   await writeTarEntry(pack, 'data.json', dataBuffer);
   for (const p of photos) {
-    if (!fs.existsSync(p.file_path)) continue;
-    const files = walkFiles(p.file_path);
-    for (const f of files) {
-      const buf = fs.readFileSync(path.join(p.file_path, f));
-      await writeTarEntry(pack, `photos/${p.id}/${f}`, buf);
+    const keys = await listPrefix(p.file_path);
+    for (const key of keys) {
+      const relPath = key.slice(p.file_path.length);
+      const buf = await getObject(key);
+      await writeTarEntry(pack, `photos/${p.id}/${relPath}`, buf);
     }
   }
   pack.finalize();
@@ -132,9 +128,8 @@ export async function createBackup(db: Database.Database): Promise<BackupRecord>
   fs.renameSync(tmpPath, fullPath);
 
   const stat = fs.statSync(fullPath);
-  setBackupStatus(db, 'ok', timestamp);
+  await setBackupStatus(db, 'ok', timestamp);
 
-  // Prune only after verify success
   pruneOldBackups();
 
   return {
@@ -147,9 +142,11 @@ export async function createBackup(db: Database.Database): Promise<BackupRecord>
   };
 }
 
-async function readBackupContents(
-  filePath: string,
-): Promise<{ manifest: BackupManifest | null; data: Record<string, unknown[]> | null; photoFiles: Map<string, Map<string, Buffer>> }> {
+async function readBackupContents(filePath: string): Promise<{
+  manifest: BackupManifest | null;
+  data: Record<string, unknown[]> | null;
+  photoFiles: Map<string, Map<string, Buffer>>;
+}> {
   const gunzip = createGunzip();
   const extract = tar.extract();
   const inStream = fs.createReadStream(filePath);
@@ -257,7 +254,7 @@ export function pruneOldBackups(olderThanDays = 30): void {
 }
 
 export async function restoreBackup(
-  db: Database.Database,
+  db: Db,
   backupPath: string,
   opts: { isRollbackAttempt?: boolean } = {},
 ): Promise<void> {
@@ -265,7 +262,6 @@ export async function restoreBackup(
   try {
     contents = await readBackupContents(backupPath);
   } catch (e) {
-    // Corrupted archive, zlib data error, truncated file, etc.
     const msg = e instanceof Error ? e.message : String(e);
     throw backupChecksumMismatch(`backup file is unreadable: ${msg}`);
   }
@@ -283,7 +279,6 @@ export async function restoreBackup(
     throw backupChecksumMismatch('restore aborted: backup checksum mismatch');
   }
 
-  // Skip snapshot creation on a rollback attempt to avoid recursion.
   let snapshotPath: string | null = null;
   if (!opts.isRollbackAttempt) {
     fs.mkdirSync(config.backupRoot, { recursive: true });
@@ -298,57 +293,42 @@ export async function restoreBackup(
     }
   }
 
-  const photosBackupDir = config.photoRoot + '.old-' + Date.now();
   try {
     // Atomic DB restore in a transaction
-    db.transaction(() => {
+    await tx(db as Pool, async (client) => {
       for (const t of [...TABLES].reverse()) {
-        db.prepare(`DELETE FROM ${t}`).run();
+        await client.query(`DELETE FROM ${t}`);
       }
-      db.prepare('DELETE FROM auto_entry_check_state').run();
+      await client.query('DELETE FROM auto_entry_check_state');
       for (const t of TABLES) {
         const rows = contents.data![t] as Array<Record<string, unknown>>;
         if (!rows || rows.length === 0) continue;
         const columns = Object.keys(rows[0]!);
-        const placeholders = columns.map(() => '?').join(',');
-        const stmt = db.prepare(
-          `INSERT INTO ${t} (${columns.join(',')}) VALUES (${placeholders})`,
-        );
+        const placeholders = columns.map((_, i) => `$${i + 1}`).join(',');
         for (const row of rows) {
-          stmt.run(...columns.map((c) => row[c] ?? null));
+          await client.query(
+            `INSERT INTO ${t} (${columns.join(',')}) VALUES (${placeholders})`,
+            columns.map((c) => row[c] ?? null),
+          );
         }
       }
-    })();
+    });
 
-    // Replace photos directory
-    if (fs.existsSync(config.photoRoot)) {
-      fs.renameSync(config.photoRoot, photosBackupDir);
-    }
-    fs.mkdirSync(config.photoRoot, { recursive: true });
-    const photos = (contents.data['photos'] as Array<{ id: string; file_path: string; owner_kind: 'item' | 'floor_plan' }>) ?? [];
+    // Restore photos to S3
+    const photos =
+      (contents.data['photos'] as Array<{ id: string; file_path: string; mime_type: string }>) ?? [];
     for (const p of photos) {
       const files = contents.photoFiles.get(p.id);
       if (!files) continue;
-      fs.mkdirSync(p.file_path, { recursive: true });
-      for (const [rel, buf] of files) {
-        fs.writeFileSync(path.join(p.file_path, rel), buf);
+      for (const [relPath, buf] of files) {
+        const contentType = relPath.startsWith('thumb') ? 'image/webp' : p.mime_type;
+        await putObject(p.file_path + relPath, buf, contentType);
       }
-    }
-    if (fs.existsSync(photosBackupDir)) {
-      fs.rmSync(photosBackupDir, { recursive: true, force: true });
     }
   } catch (e) {
     const originalMessage = e instanceof Error ? e.message : String(e);
-    // Attempt rollback (only when we created a snapshot). Guard against infinite
-    // recursion via opts.isRollbackAttempt — a failed rollback surfaces both.
     if (snapshotPath && !opts.isRollbackAttempt) {
       try {
-        if (fs.existsSync(photosBackupDir)) {
-          if (fs.existsSync(config.photoRoot)) {
-            fs.rmSync(config.photoRoot, { recursive: true, force: true });
-          }
-          fs.renameSync(photosBackupDir, config.photoRoot);
-        }
         await restoreBackup(db, snapshotPath, { isRollbackAttempt: true });
         throw restoreFailed(
           `restore failed and rolled back: ${originalMessage} (pre-restore snapshot at ${snapshotPath})`,
@@ -366,23 +346,25 @@ export async function restoreBackup(
   }
 }
 
-async function createBackupSnapshot(db: Database.Database, snapshotPath: string): Promise<void> {
+async function createBackupSnapshot(db: Db, snapshotPath: string): Promise<void> {
   const entityData: Record<string, unknown[]> = {};
   for (const tableName of TABLES) {
-    entityData[tableName] = db.prepare(`SELECT * FROM ${tableName}`).all();
+    const { rows } = await db.query(`SELECT * FROM ${tableName}`);
+    entityData[tableName] = rows;
   }
   const photos = entityData['photos'] as Array<{ file_path: string; id: string }>;
   const photoHashes: string[] = [];
   for (const p of photos) {
-    if (!fs.existsSync(p.file_path)) {
+    const keys = await listPrefix(p.file_path);
+    if (keys.length === 0) {
       photoHashes.push(`missing:${p.id}`);
       continue;
     }
-    const files = walkFiles(p.file_path);
     const h = createHash('sha256');
-    for (const f of files.sort()) {
-      h.update(f);
-      h.update(fs.readFileSync(path.join(p.file_path, f)));
+    for (const key of keys.sort()) {
+      const relPath = key.slice(p.file_path.length);
+      h.update(relPath);
+      h.update(await getObject(key));
     }
     photoHashes.push(`${p.id}:${h.digest('hex')}`);
   }
@@ -406,11 +388,11 @@ async function createBackupSnapshot(db: Database.Database, snapshotPath: string)
   await writeTarEntry(pack, 'manifest.json', Buffer.from(JSON.stringify(manifest, null, 2)));
   await writeTarEntry(pack, 'data.json', dataBuffer);
   for (const p of photos) {
-    if (!fs.existsSync(p.file_path)) continue;
-    const files = walkFiles(p.file_path);
-    for (const f of files) {
-      const buf = fs.readFileSync(path.join(p.file_path, f));
-      await writeTarEntry(pack, `photos/${p.id}/${f}`, buf);
+    const keys = await listPrefix(p.file_path);
+    for (const key of keys) {
+      const relPath = key.slice(p.file_path.length);
+      const buf = await getObject(key);
+      await writeTarEntry(pack, `photos/${p.id}/${relPath}`, buf);
     }
   }
   pack.finalize();

@@ -1,10 +1,10 @@
-import type Database from 'better-sqlite3';
 import type { ItemType } from '@sophie/shared';
 import type { ItemTypeCreate, ItemTypePatch } from '@sophie/shared';
+import type { Db, Pool } from '../db/postgres.js';
+import { tx } from '../db/postgres.js';
 import { conflictReferenced, conflictStale, notFound } from '../errors.js';
 import { clock } from '../util/clock.js';
 import { ulid } from '../util/ulid.js';
-import { tx } from '../db/sqlite.js';
 
 type Row = {
   id: string;
@@ -32,49 +32,47 @@ function map(r: Row): ItemType {
   };
 }
 
-export function listTypes(db: Database.Database): ItemType[] {
-  const rows = db
-    .prepare(
-      `SELECT t.*, (SELECT COUNT(*) FROM items WHERE item_type_id = t.id) AS item_count
-       FROM item_types t ORDER BY t.name COLLATE NOCASE`,
-    )
-    .all() as Row[];
+export async function listTypes(db: Db): Promise<ItemType[]> {
+  const { rows } = await db.query<Row>(
+    `SELECT t.*, (SELECT COUNT(*) FROM items WHERE item_type_id = t.id) AS item_count
+     FROM item_types t ORDER BY LOWER(t.name)`,
+  );
   return rows.map(map);
 }
 
-export function getType(db: Database.Database, id: string): ItemType {
-  const row = db
-    .prepare(
-      `SELECT t.*, (SELECT COUNT(*) FROM items WHERE item_type_id = t.id) AS item_count
-       FROM item_types t WHERE id = ?`,
-    )
-    .get(id) as Row | undefined;
-  if (!row) throw notFound('item_type');
-  return map(row);
+export async function getType(db: Db, id: string): Promise<ItemType> {
+  const { rows } = await db.query<Row>(
+    `SELECT t.*, (SELECT COUNT(*) FROM items WHERE item_type_id = t.id) AS item_count
+     FROM item_types t WHERE id = $1`,
+    [id],
+  );
+  if (rows.length === 0) throw notFound('item_type');
+  return map(rows[0]!);
 }
 
-export function createType(db: Database.Database, data: ItemTypeCreate): ItemType {
+export async function createType(db: Db, data: ItemTypeCreate): Promise<ItemType> {
   const id = ulid();
   const now = clock.nowIso();
-  db.prepare(
+  await db.query(
     `INSERT INTO item_types (id, name, name_lower, default_unit, default_low_stock_threshold, icon, color, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  ).run(
-    id,
-    data.name,
-    data.name.toLowerCase(),
-    data.default_unit,
-    data.default_low_stock_threshold ?? null,
-    data.icon ?? null,
-    data.color ?? null,
-    now,
-    now,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [
+      id,
+      data.name,
+      data.name.toLowerCase(),
+      data.default_unit,
+      data.default_low_stock_threshold ?? null,
+      data.icon ?? null,
+      data.color ?? null,
+      now,
+      now,
+    ],
   );
   return getType(db, id);
 }
 
-export function patchType(db: Database.Database, id: string, patch: ItemTypePatch): ItemType {
-  const existing = getType(db, id);
+export async function patchType(db: Db, id: string, patch: ItemTypePatch): Promise<ItemType> {
+  const existing = await getType(db, id);
   if (patch.base_updated_at && patch.base_updated_at !== existing.updated_at) {
     throw conflictStale();
   }
@@ -89,39 +87,40 @@ export function patchType(db: Database.Database, id: string, patch: ItemTypePatc
     color: patch.color === undefined ? existing.color : patch.color,
   };
   const now = clock.nowIso();
-  db.prepare(
-    `UPDATE item_types SET name=?, name_lower=?, default_unit=?, default_low_stock_threshold=?, icon=?, color=?, updated_at=? WHERE id=?`,
-  ).run(
-    next.name,
-    next.name.toLowerCase(),
-    next.default_unit,
-    next.default_low_stock_threshold,
-    next.icon,
-    next.color,
-    now,
-    id,
+  await db.query(
+    `UPDATE item_types SET name=$1, name_lower=$2, default_unit=$3, default_low_stock_threshold=$4, icon=$5, color=$6, updated_at=$7 WHERE id=$8`,
+    [
+      next.name,
+      next.name.toLowerCase(),
+      next.default_unit,
+      next.default_low_stock_threshold,
+      next.icon,
+      next.color,
+      now,
+      id,
+    ],
   );
   return getType(db, id);
 }
 
-export function deleteType(db: Database.Database, id: string): void {
-  const t = getType(db, id);
+export async function deleteType(db: Db, id: string): Promise<void> {
+  const t = await getType(db, id);
   if ((t.item_count ?? 0) > 0) throw conflictReferenced('item_type', t.item_count);
-  db.prepare('DELETE FROM item_types WHERE id = ?').run(id);
+  await db.query('DELETE FROM item_types WHERE id = $1', [id]);
 }
 
-export function mergeType(db: Database.Database, sourceId: string, targetId: string): ItemType {
-  if (sourceId === targetId) throw notFound('item_type'); // nothing to merge
-  const source = getType(db, sourceId);
-  const target = getType(db, targetId);
-  tx(db, () => {
+export async function mergeType(db: Db, sourceId: string, targetId: string): Promise<ItemType> {
+  if (sourceId === targetId) throw notFound('item_type');
+  const source = await getType(db, sourceId);
+  const target = await getType(db, targetId);
+  await tx(db as Pool, async (client) => {
     const now = clock.nowIso();
-    db.prepare('UPDATE items SET item_type_id = ?, updated_at = ? WHERE item_type_id = ?').run(
+    await client.query('UPDATE items SET item_type_id = $1, updated_at = $2 WHERE item_type_id = $3', [
       target.id,
       now,
       source.id,
-    );
-    db.prepare('DELETE FROM item_types WHERE id = ?').run(source.id);
+    ]);
+    await client.query('DELETE FROM item_types WHERE id = $1', [source.id]);
   });
   return getType(db, target.id);
 }

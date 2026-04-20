@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { restoreConfirmZ } from '@sophie/shared';
-import { getDb } from '../db/sqlite.js';
+import { getPool } from '../db/postgres.js';
 import { parseId } from '../util/params.js';
 import { parseMultipartForm } from '../util/multipart.js';
 import {
@@ -19,13 +19,13 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/backups', async () => ({ items: listBackups() }));
 
   app.post('/api/v1/backups', async (req, reply) => {
-    const result = await createBackup(getDb());
+    const result = await createBackup(getPool());
     reply.status(201);
     return result;
   });
 
   app.get('/api/v1/backups/status', async () => {
-    const s = getSettings(getDb());
+    const s = await getSettings(getPool());
     return {
       last_backup_status: s.last_backup_status,
       last_backup_at: s.last_backup_at,
@@ -44,13 +44,13 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
     const id = parseId(req.params);
     restoreConfirmZ.parse(req.body);
     const full = getBackupPath(id);
-    await restoreBackup(getDb(), full);
+    await restoreBackup(getPool(), full);
     return { ok: true };
   });
 
   app.post('/api/v1/backups/upload-and-restore', async (req) => {
     const form = await parseMultipartForm(req, {
-      maxFileBytes: 2 * 1024 * 1024 * 1024, // 2 GB cap for backup archives
+      maxFileBytes: 2 * 1024 * 1024 * 1024,
       maxFiles: 1,
     });
     if (form.fields.confirm !== 'REPLACE ALL DATA') {
@@ -62,7 +62,7 @@ export async function backupsRoutes(app: FastifyInstance): Promise<void> {
     const tmpPath = path.join(uploadDir, `upload_${Date.now()}.tar.gz`);
     fs.writeFileSync(tmpPath, form.files[0]!.buffer);
     try {
-      await restoreBackup(getDb(), tmpPath);
+      await restoreBackup(getPool(), tmpPath);
     } finally {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     }

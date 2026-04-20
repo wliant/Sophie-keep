@@ -1,6 +1,5 @@
-import type Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
+import type { Db, Pool } from '../db/postgres.js';
+import { tx } from '../db/postgres.js';
 import sharp from 'sharp';
 import { fileTypeFromBuffer } from 'file-type';
 import type { Photo } from '@sophie/shared';
@@ -14,7 +13,7 @@ import {
 import { clock } from '../util/clock.js';
 import { ulid } from '../util/ulid.js';
 import { config } from '../config.js';
-import { tx } from '../db/sqlite.js';
+import { putObject, deletePrefix } from '../storage/s3.js';
 
 const ACCEPTED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
@@ -25,20 +24,28 @@ function extFromMime(mime: string): string {
   return 'bin';
 }
 
-function photoDir(id: string, kind: 'item' | 'floor_plan'): string {
+/** Returns the S3 key prefix for a photo (ends with '/'). */
+function photoKeyPrefix(id: string, kind: 'item' | 'floor_plan'): string {
   const prefix = id.slice(0, 2).toLowerCase();
-  if (kind === 'item') return path.join(config.photoRoot, 'items', prefix, id);
-  return path.join(config.photoRoot, 'floor_plan', id);
+  if (kind === 'item') return `photos/items/${prefix}/${id}/`;
+  return `photos/floor_plan/${id}/`;
+}
+
+/** Compute S3 keys for original and thumbnail given the stored prefix and mime type. */
+export function photoKeys(keyPrefix: string, mimeType: string): { original: string; thumb: string } {
+  const ext = extFromMime(mimeType);
+  return {
+    original: `${keyPrefix}original.${ext}`,
+    thumb: `${keyPrefix}thumb.webp`,
+  };
 }
 
 export interface UploadedPhoto {
   photo: Photo;
-  original_path: string;
-  thumb_path: string;
 }
 
 export async function uploadPhoto(
-  db: Database.Database,
+  db: Db,
   kind: 'item' | 'floor_plan',
   ownerId: string,
   declaredMime: string,
@@ -58,34 +65,31 @@ export async function uploadPhoto(
     throw magicBytesMismatch(`declared ${declaredMime} but file is ${sniffed.mime}`);
   }
 
-  // Enforce owner exists
   if (kind === 'item') {
-    const exists = db.prepare('SELECT 1 FROM items WHERE id = ?').get(ownerId);
-    if (!exists) throw notFound('item');
-    const photoCount = db
-      .prepare(`SELECT COUNT(*) c FROM photos WHERE owner_kind='item' AND owner_id=?`)
-      .get(ownerId) as { c: number };
-    if (photoCount.c >= config.maxPhotosPerItem) {
+    const { rows } = await db.query('SELECT 1 FROM items WHERE id = $1', [ownerId]);
+    if (rows.length === 0) throw notFound('item');
+    const { rows: countRows } = await db.query<{ c: string }>(
+      `SELECT COUNT(*) c FROM photos WHERE owner_kind='item' AND owner_id=$1`,
+      [ownerId],
+    );
+    if (Number(countRows[0]!.c) >= config.maxPhotosPerItem) {
       throw validation(`max ${config.maxPhotosPerItem} photos per item`);
     }
   } else {
-    const exists = db
-      .prepare("SELECT 1 FROM floor_plan WHERE id = 'singleton' AND 'singleton' = ?")
-      .get(ownerId);
-    if (!exists && ownerId !== 'singleton') throw notFound('floor_plan');
+    const { rows } = await db.query(
+      "SELECT 1 FROM floor_plan WHERE id = 'singleton' AND 'singleton' = $1",
+      [ownerId],
+    );
+    if (rows.length === 0 && ownerId !== 'singleton') throw notFound('floor_plan');
   }
 
   const id = ulid();
-  const dir = photoDir(id, kind);
-  fs.mkdirSync(dir, { recursive: true });
+  const keyPrefix = photoKeyPrefix(id, kind);
   const ext = extFromMime(sniffed.mime);
-  const originalPath = path.join(dir, `original.${ext}`);
-  const thumbPath = path.join(dir, `thumb.webp`);
+  const originalKey = `${keyPrefix}original.${ext}`;
+  const thumbKey = `${keyPrefix}thumb.webp`;
 
-  // Strip EXIF by re-encoding without calling withMetadata/keepMetadata:
-  // sharp's default is to drop all metadata. .rotate() first applies the
-  // EXIF orientation so the rendered pixels are upright, then the re-encode
-  // writes a clean file. (NFR-PRIV-003, AC-CROSS-032)
+  // Strip EXIF by re-encoding via sharp (default drops all metadata; .rotate() applies EXIF orientation first)
   const img = sharp(buffer).rotate();
   const reencoder =
     sniffed.mime === 'image/jpeg'
@@ -93,34 +97,40 @@ export async function uploadPhoto(
       : sniffed.mime === 'image/png'
         ? img.png()
         : img.webp({ quality: 90 });
-  await reencoder.toFile(originalPath);
+  const originalBuf = await reencoder.toBuffer();
+  await putObject(originalKey, originalBuf, sniffed.mime);
 
+  let thumbBuf: Buffer;
   try {
-    await sharp(originalPath).resize(512, 512, { fit: 'inside' }).webp({ quality: 80 }).toFile(thumbPath);
+    thumbBuf = await sharp(originalBuf).resize(512, 512, { fit: 'inside' }).webp({ quality: 80 }).toBuffer();
   } catch {
-    // thumbnail fallback: copy original path as thumbnail reference
-    fs.copyFileSync(originalPath, thumbPath);
+    thumbBuf = originalBuf;
   }
+  await putObject(thumbKey, thumbBuf, 'image/webp');
 
-  const size = fs.statSync(originalPath).size;
+  const size = originalBuf.length;
   const now = clock.nowIso();
-  db.prepare(
+  await db.query(
     `INSERT INTO photos (id, owner_kind, owner_id, file_path, mime_type, size_bytes, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-  ).run(id, kind, ownerId, dir, sniffed.mime, size, now);
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id, kind, ownerId, keyPrefix, sniffed.mime, size, now],
+  );
 
-  // Append to item.photo_ids order
   if (kind === 'item') {
-    const row = db.prepare('SELECT photo_ids, updated_at FROM items WHERE id = ?').get(ownerId) as
-      | { photo_ids: string; updated_at: string }
-      | undefined;
-    const ids = (row && JSON.parse(row.photo_ids)) as string[];
-    ids.push(id);
-    db.prepare('UPDATE items SET photo_ids = ?, updated_at = ? WHERE id = ?').run(
-      JSON.stringify(ids),
-      clock.nowIso(),
-      ownerId,
+    const { rows } = await db.query<{ photo_ids: string }>(
+      'SELECT photo_ids FROM items WHERE id = $1',
+      [ownerId],
     );
+    const row = rows[0];
+    if (row) {
+      const ids = JSON.parse(row.photo_ids) as string[];
+      ids.push(id);
+      await db.query('UPDATE items SET photo_ids = $1, updated_at = $2 WHERE id = $3', [
+        JSON.stringify(ids),
+        clock.nowIso(),
+        ownerId,
+      ]);
+    }
   }
 
   return {
@@ -128,63 +138,50 @@ export async function uploadPhoto(
       id,
       owner_kind: kind,
       owner_id: ownerId,
-      file_path: dir,
+      file_path: keyPrefix,
       mime_type: sniffed.mime,
       size_bytes: size,
       created_at: now,
     },
-    original_path: originalPath,
-    thumb_path: thumbPath,
   };
 }
 
-export function getPhoto(db: Database.Database, id: string): Photo {
-  const r = db.prepare('SELECT * FROM photos WHERE id = ?').get(id) as Photo | undefined;
-  if (!r) throw notFound('photo');
-  return r;
+export async function getPhoto(db: Db, id: string): Promise<Photo> {
+  const { rows } = await db.query<Photo>('SELECT * FROM photos WHERE id = $1', [id]);
+  if (rows.length === 0) throw notFound('photo');
+  return rows[0]!;
 }
 
-export function photoFiles(p: Photo): { original: string | null; thumb: string | null } {
-  const dir = p.file_path;
-  if (!fs.existsSync(dir)) return { original: null, thumb: null };
-  const files = fs.readdirSync(dir);
-  const orig = files.find((f) => f.startsWith('original.')) ?? null;
-  const thumb = files.find((f) => f.startsWith('thumb.')) ?? null;
-  return {
-    original: orig ? path.join(dir, orig) : null,
-    thumb: thumb ? path.join(dir, thumb) : null,
-  };
-}
-
-export function deletePhoto(db: Database.Database, id: string): void {
-  const p = getPhoto(db, id);
-  tx(db, () => {
-    db.prepare('DELETE FROM photos WHERE id = ?').run(id);
+export async function deletePhoto(db: Db, id: string): Promise<void> {
+  const p = await getPhoto(db, id);
+  await tx(db as Pool, async (client) => {
+    await client.query('DELETE FROM photos WHERE id = $1', [id]);
     if (p.owner_kind === 'item') {
-      const row = db.prepare('SELECT photo_ids FROM items WHERE id = ?').get(p.owner_id) as
-        | { photo_ids: string }
-        | undefined;
-      if (row) {
-        const ids = (JSON.parse(row.photo_ids) as string[]).filter((x) => x !== id);
-        db.prepare('UPDATE items SET photo_ids = ?, updated_at = ? WHERE id = ?').run(
+      const { rows } = await client.query<{ photo_ids: string }>(
+        'SELECT photo_ids FROM items WHERE id = $1',
+        [p.owner_id],
+      );
+      if (rows[0]) {
+        const ids = (JSON.parse(rows[0].photo_ids) as string[]).filter((x) => x !== id);
+        await client.query('UPDATE items SET photo_ids = $1, updated_at = $2 WHERE id = $3', [
           JSON.stringify(ids),
           clock.nowIso(),
           p.owner_id,
-        );
+        ]);
       }
     }
   });
   try {
-    fs.rmSync(p.file_path, { recursive: true, force: true });
+    await deletePrefix(p.file_path);
   } catch {
-    // swallow; file cleanup is best-effort
+    // swallow; S3 cleanup is best-effort
   }
 }
 
-export function cleanupPhotoDirs(paths: string[]): void {
-  for (const p of paths) {
+export async function cleanupPhotoKeys(keyPrefixes: string[]): Promise<void> {
+  for (const prefix of keyPrefixes) {
     try {
-      fs.rmSync(p, { recursive: true, force: true });
+      await deletePrefix(prefix);
     } catch {
       // ignore
     }
