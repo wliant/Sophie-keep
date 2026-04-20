@@ -33,8 +33,11 @@ export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   bind: process.env.BIND || '127.0.0.1',
   dataDir: DATA_DIR,
-  dbPath: process.env.SOPHIE_DB_PATH || path.join(DATA_DIR, 'sophie.db'),
-  photoRoot: process.env.SOPHIE_PHOTO_ROOT || path.join(DATA_DIR, 'photos'),
+  databaseUrl: process.env.DATABASE_URL || 'postgres://sophie:sophie@localhost:5432/sophie',
+  minioEndpoint: process.env.MINIO_ENDPOINT || 'http://localhost:9000',
+  minioAccessKey: process.env.MINIO_ACCESS_KEY || 'sophie',
+  minioSecretKey: process.env.MINIO_SECRET_KEY || 'sophiepass',
+  minioBucket: process.env.MINIO_BUCKET || 'sophie-photos',
   backupRoot: process.env.SOPHIE_BACKUP_ROOT || path.join(DATA_DIR, 'backups'),
   logDir: process.env.SOPHIE_LOG_DIR || path.join(DATA_DIR, 'logs'),
   backupTime: parseTime(process.env.SOPHIE_BACKUP_TIME || '03:00'),
@@ -46,7 +49,7 @@ export const config = {
 };
 
 export function ensureDirs(): void {
-  for (const p of [config.dataDir, config.photoRoot, config.backupRoot, config.logDir]) {
+  for (const p of [config.dataDir, config.backupRoot, config.logDir]) {
     fs.mkdirSync(p, { recursive: true });
   }
 }
