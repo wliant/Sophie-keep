@@ -14,7 +14,8 @@ export type QuantityChangeReason =
   | 'manual'
   | 'quick_add'
   | 'shopping_restock'
-  | 'import';
+  | 'import'
+  | 'recipe_cooked';
 
 export interface Item {
   id: string;
@@ -45,6 +46,7 @@ export interface ItemWithDerived extends Item {
 export interface ItemType {
   id: string;
   name: string;
+  parent_id: string | null;
   default_unit: string;
   default_low_stock_threshold: number | null;
   icon: string | null;
@@ -52,6 +54,8 @@ export interface ItemType {
   created_at: string;
   updated_at: string;
   item_count?: number;
+  children_count?: number;
+  parent_name?: string | null;
 }
 
 export interface Room {
@@ -85,7 +89,7 @@ export interface FloorPlan {
 
 export interface Photo {
   id: string;
-  owner_kind: 'item' | 'floor_plan';
+  owner_kind: 'item' | 'floor_plan' | 'recipe';
   owner_id: string;
   file_path: string;
   mime_type: string;
@@ -124,6 +128,71 @@ export interface ShoppingListManualEntry {
   entry: ShoppingListEntry;
 }
 
+export interface Recipe {
+  id: string;
+  name: string;
+  description: string | null;
+  steps: string[];
+  tags: string[];
+  servings: number | null;
+  prep_minutes: number | null;
+  cook_minutes: number | null;
+  notes: string | null;
+  photo_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecipeIngredient {
+  id: string;
+  recipe_id: string;
+  item_type_id: string;
+  required_quantity: number;
+  required_unit: string;
+  optional: boolean;
+  note: string | null;
+  sort_order: number;
+}
+
+export type IngredientMatchStatus = 'ok' | 'short' | 'missing' | 'unit_mismatch';
+export type RecipeMatchStatus = 'makeable' | 'partial' | 'missing';
+
+export interface RecipeIngredientWithStatus extends RecipeIngredient {
+  status: IngredientMatchStatus;
+  on_hand_quantity: number;
+  shortfall: number | null;
+  soonest_expiration_date: string | null;
+  type_name: string | null;
+}
+
+export interface RecipeWithDerived extends Recipe {
+  match_status: RecipeMatchStatus;
+  missing_count: number;
+  short_count: number;
+  unit_mismatch_count: number;
+  ingredient_count: number;
+  thumbnail_url?: string | null;
+}
+
+export interface RecipeDetail extends RecipeWithDerived {
+  ingredients: RecipeIngredientWithStatus[];
+}
+
+export interface RecipeCookPlanStep {
+  item_id: string;
+  item_name: string;
+  item_type_id: string;
+  decrement: number;
+  unit: string;
+}
+
+export interface RecipeCookResult {
+  recipe_id: string;
+  dry_run: boolean;
+  decrements: RecipeCookPlanStep[];
+  quantity_change_ids: string[];
+}
+
 export interface Settings {
   expiring_soon_window_days: number;
   quick_add_default_type_id: string | null;
@@ -160,5 +229,5 @@ export interface BackupRecord {
   verification_status: 'ok' | 'checksum_mismatch' | 'unreadable';
 }
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const APP_VERSION = '1.0.0';

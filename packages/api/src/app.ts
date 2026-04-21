@@ -19,6 +19,7 @@ import { shoppingRoutes } from './routes/shopping-list.js';
 import { settingsRoutes } from './routes/settings.js';
 import { backupsRoutes } from './routes/backups.js';
 import { quickAddRoutes } from './routes/quick-add.js';
+import { recipesRoutes } from './routes/recipes.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const isDev = config.nodeEnv !== 'production';
@@ -61,6 +62,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(settingsRoutes);
   await app.register(backupsRoutes);
   await app.register(quickAddRoutes);
+  await app.register(recipesRoutes);
 
   // Serve frontend in production if built
   if (fs.existsSync(config.webDistDir)) {

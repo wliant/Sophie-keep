@@ -20,13 +20,18 @@ export const conflictStale = () =>
   new AppError('CONFLICT_STALE', 409, 'Record modified by another client. Reload and retry.');
 export const conflictUnique = (field: string) =>
   new AppError('CONFLICT_UNIQUE', 409, `${field} must be unique`, { [field]: ['must be unique'] });
-export const conflictReferenced = (entity: string, count?: number) =>
+export const conflictReferenced = (
+  entity: string,
+  count?: number,
+  fields?: Record<string, string[]>,
+) =>
   new AppError(
     'CONFLICT_REFERENCED',
     409,
     count != null
       ? `${entity} is referenced by ${count} item${count === 1 ? '' : 's'}`
       : `${entity} is referenced and cannot be deleted`,
+    fields,
   );
 export const conflictNonEmpty = (entity: string) =>
   new AppError('CONFLICT_NON_EMPTY', 409, `${entity} is not empty`);

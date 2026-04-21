@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { ItemType, StorageLocation } from '@sophie/shared';
 import { ApiError } from '../api/client';
 import { endpoints, qk, type ItemDetailResponse } from '../api/endpoints';
+import { flattenTypes } from '../api/itemTypeHierarchy';
 import { toast } from '../state/toast';
 import { ItemBadges } from '../components/Badge';
 
@@ -128,9 +129,9 @@ export function ItemDetailPage() {
                 patch.mutate({ item_type_id: e.target.value, base_updated_at: d.updated_at })
               }
             >
-              {types.data?.items.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
+              {flattenTypes(types.data?.items ?? []).map((o) => (
+                <option key={o.type.id} value={o.type.id}>
+                  {o.label}
                 </option>
               ))}
             </select>

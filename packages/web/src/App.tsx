@@ -7,6 +7,9 @@ import { ItemDetailPage } from './pages/ItemDetailPage';
 import { FloorPlanPage } from './pages/FloorPlanPage';
 import { ShoppingListPage } from './pages/ShoppingListPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { RecipesPage } from './pages/RecipesPage';
+import { RecipeDetailPage } from './pages/RecipeDetailPage';
+import { RecipeEditPage } from './pages/RecipeEditPage';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ToastHost } from './components/Toast';
 import { BackupFailureBanner } from './components/BackupFailureBanner';
@@ -14,6 +17,7 @@ import { BackupFailureBanner } from './components/BackupFailureBanner';
 const navItems: Array<{ to: string; label: string }> = [
   { to: '/', label: 'Dashboard' },
   { to: '/inventory', label: 'Inventory' },
+  { to: '/recipes', label: 'Recipes' },
   { to: '/search', label: 'Search' },
   { to: '/floor-plan', label: 'Floor plan' },
   { to: '/shopping', label: 'Shopping' },
@@ -62,6 +66,10 @@ export function App() {
           <Route path="/search" element={<SearchPage />} />
           <Route path="/floor-plan" element={<FloorPlanPage />} />
           <Route path="/shopping" element={<ShoppingListPage />} />
+          <Route path="/recipes" element={<RecipesPage />} />
+          <Route path="/recipes/new" element={<RecipeEditPage />} />
+          <Route path="/recipes/:id" element={<RecipeDetailPage />} />
+          <Route path="/recipes/:id/edit" element={<RecipeEditPage />} />
           <Route path="/settings/*" element={<SettingsPage />} />
           <Route path="*" element={<div className="card">Page not found.</div>} />
         </Routes>

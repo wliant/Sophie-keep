@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BackupRecord, ItemType, Room, Settings, StorageLocation } from '@sophie/shared';
 import { ApiError } from '../api/client';
 import { endpoints, qk, type BackupStatus, type HealthResponse } from '../api/endpoints';
+import { flattenTypes } from '../api/itemTypeHierarchy';
 import { toast } from '../state/toast';
 
 export function SettingsPage() {
@@ -67,16 +68,22 @@ function ItemTypes() {
     queryKey: qk.itemTypes,
     queryFn: endpoints.listTypes,
   });
-  const [draft, setDraft] = useState<{ name: string; default_unit: string }>({
+  const [draft, setDraft] = useState<{
+    name: string;
+    default_unit: string;
+    parent_id: string;
+  }>({
     name: '',
     default_unit: 'pcs',
+    parent_id: '',
   });
 
   const create = useMutation({
-    mutationFn: (body: { name: string; default_unit: string }) => endpoints.createType(body),
+    mutationFn: (body: { name: string; default_unit: string; parent_id: string | null }) =>
+      endpoints.createType(body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.itemTypes });
-      setDraft({ name: '', default_unit: 'pcs' });
+      setDraft({ name: '', default_unit: 'pcs', parent_id: '' });
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Create failed'),
   });
@@ -86,6 +93,8 @@ function ItemTypes() {
     onError: (e) => toast.error(e instanceof ApiError ? e.message : 'Delete failed'),
   });
 
+  const hierarchy = flattenTypes(types.data?.items ?? []);
+
   return (
     <section className="card stack">
       <form
@@ -93,7 +102,11 @@ function ItemTypes() {
         onSubmit={(e) => {
           e.preventDefault();
           if (draft.name.trim())
-            create.mutate({ name: draft.name.trim(), default_unit: draft.default_unit });
+            create.mutate({
+              name: draft.name.trim(),
+              default_unit: draft.default_unit,
+              parent_id: draft.parent_id || null,
+            });
         }}
       >
         <input
@@ -102,6 +115,18 @@ function ItemTypes() {
           onChange={(e) => setDraft({ ...draft, name: e.target.value })}
           maxLength={60}
         />
+        <select
+          aria-label="Parent category"
+          value={draft.parent_id}
+          onChange={(e) => setDraft({ ...draft, parent_id: e.target.value })}
+        >
+          <option value="">(no parent)</option>
+          {hierarchy.map((o) => (
+            <option key={o.type.id} value={o.type.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <input
           placeholder="unit"
           value={draft.default_unit}
@@ -119,31 +144,44 @@ function ItemTypes() {
             <th>Name</th>
             <th>Default unit</th>
             <th>Items</th>
+            <th>Subtypes</th>
             <th />
           </tr>
         </thead>
         <tbody>
-          {types.data?.items.map((t) => (
-            <tr key={t.id}>
-              <td>{t.name}</td>
-              <td>{t.default_unit}</td>
-              <td>{t.item_count ?? 0}</td>
-              <td>
-                <button
-                  className="danger"
-                  disabled={(t.item_count ?? 0) > 0}
-                  title={
-                    (t.item_count ?? 0) > 0
-                      ? 'Cannot delete: items reference this type'
-                      : undefined
-                  }
-                  onClick={() => del.mutate(t.id)}
-                >
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
+          {hierarchy.map((o) => {
+            const t = o.type;
+            const blocked =
+              (t.item_count ?? 0) > 0 || (t.children_count ?? 0) > 0;
+            const title = (t.item_count ?? 0) > 0
+              ? 'Cannot delete: items reference this type'
+              : (t.children_count ?? 0) > 0
+                ? 'Cannot delete: subtypes reference this type'
+                : undefined;
+            return (
+              <tr key={t.id}>
+                <td>
+                  <span style={{ paddingLeft: `${o.depth * 1.2}rem` }}>
+                    {o.depth > 0 ? '↳ ' : ''}
+                    {t.name}
+                  </span>
+                </td>
+                <td>{t.default_unit}</td>
+                <td>{t.item_count ?? 0}</td>
+                <td>{t.children_count ?? 0}</td>
+                <td>
+                  <button
+                    className="danger"
+                    disabled={blocked}
+                    title={title}
+                    onClick={() => del.mutate(t.id)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </section>
