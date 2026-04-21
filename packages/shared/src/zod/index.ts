@@ -218,7 +218,7 @@ export const recipeCreateZ = z.object({
   cook_minutes: z.number().int().min(0).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   photo_ids: z.array(ID).max(10).optional(),
-  ingredients: z.array(recipeIngredientCreateZ).max(60),
+  ingredients: z.array(recipeIngredientCreateZ).min(1).max(60),
 });
 
 export const recipePatchZ = z
@@ -232,7 +232,7 @@ export const recipePatchZ = z
     cook_minutes: z.number().int().min(0).nullable().optional(),
     notes: z.string().max(2000).nullable().optional(),
     photo_ids: z.array(ID).max(10).optional(),
-    ingredients: z.array(recipeIngredientCreateZ).max(60).optional(),
+    ingredients: z.array(recipeIngredientCreateZ).min(1).max(60).optional(),
     base_updated_at: z.string().optional(),
   })
   .strict();

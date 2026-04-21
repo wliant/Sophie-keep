@@ -465,28 +465,57 @@ export async function listRecipes(
     }
   })();
 
-  // Pre-count is expensive when combined with computed match status; always
-  // fetch ids cheaply, compute match status in-process, filter, then page.
-  const { rows: idRows } = await db.query<{ id: string }>(
-    `SELECT id FROM recipes ${whereSql} ${orderBy}`,
+  // Fetch every matching recipe row in one query.
+  const { rows: recipeRows } = await db.query<RecipeRow>(
+    `SELECT * FROM recipes ${whereSql} ${orderBy}`,
     p.values(),
   );
+  if (recipeRows.length === 0) {
+    return { items: [], page, page_size: pageSize, total: 0, total_pages: 1 };
+  }
+  const recipes = recipeRows.map(rowToRecipe);
+
+  // Fetch every ingredient for every matched recipe in a single query, then
+  // bucket them by recipe_id. Avoids the per-recipe N+1 incurred by calling
+  // listIngredients() inside the loop.
+  const ingP = pgParams();
+  const ingPlaceholders = ingP.addAll(recipes.map((r) => r.id));
+  const { rows: ingRows } = await db.query<IngredientRow>(
+    `SELECT * FROM recipe_ingredients WHERE recipe_id IN (${ingPlaceholders}) ORDER BY recipe_id, sort_order ASC`,
+    ingP.values(),
+  );
+  const ingredientsByRecipe = new Map<string, RecipeIngredient[]>();
+  const allTypeIds = new Set<string>();
+  for (const row of ingRows) {
+    const ingredient = rowToIngredient(row);
+    allTypeIds.add(ingredient.item_type_id);
+    const list = ingredientsByRecipe.get(ingredient.recipe_id) ?? [];
+    list.push(ingredient);
+    ingredientsByRecipe.set(ingredient.recipe_id, list);
+  }
 
   const totals = await getInventoryTotals(db);
   const typesWith = await getTypeIdsWithAnyInventory(db);
+  const typeNames = await getTypeNames(db, [...allTypeIds]);
 
   const requestedStatus = query.match_status;
   const makeableOnly = query.makeable === true || query.makeable === 'true';
 
   const matched: { recipe: RecipeWithDerived; sortKey: number }[] = [];
-  for (const { id } of idRows) {
-    const m = await matchRecipe(db, id, totals, typesWith);
-    if (requestedStatus && m.status !== requestedStatus) continue;
-    if (makeableOnly && m.status !== 'makeable') continue;
+  for (const recipe of recipes) {
+    const ingredients = ingredientsByRecipe.get(recipe.id) ?? [];
+    const withStatus: RecipeIngredientWithStatus[] = ingredients.map((i) => ({
+      ...i,
+      ...classifyIngredient(i, totals, typesWith),
+      type_name: typeNames.get(i.item_type_id) ?? null,
+    }));
+    const status = computeRecipeMatchStatus(withStatus);
+    const counts = countStatuses(withStatus);
+    if (requestedStatus && status !== requestedStatus) continue;
+    if (makeableOnly && status !== 'makeable') continue;
     matched.push({
-      recipe: toWithDerived(m),
-      sortKey:
-        m.status === 'makeable' ? 0 : m.status === 'partial' ? 1 : 2,
+      recipe: toWithDerived({ recipe, ingredients: withStatus, status, counts }),
+      sortKey: status === 'makeable' ? 0 : status === 'partial' ? 1 : 2,
     });
   }
 
@@ -498,13 +527,7 @@ export async function listRecipes(
   const total_pages = Math.max(1, Math.ceil(total / pageSize));
   const slice = matched.slice(offset, offset + pageSize).map((m) => m.recipe);
 
-  return {
-    items: slice,
-    page,
-    page_size: pageSize,
-    total,
-    total_pages,
-  };
+  return { items: slice, page, page_size: pageSize, total, total_pages };
 }
 
 function toWithDerived(m: MatchedRecipe): RecipeWithDerived {
@@ -521,13 +544,29 @@ function toWithDerived(m: MatchedRecipe): RecipeWithDerived {
 }
 
 export async function listAllTags(db: Db): Promise<string[]> {
-  const { rows } = await db.query<{ tags: string }>('SELECT tags FROM recipes');
-  const set = new Set<string>();
-  for (const r of rows) {
-    const arr = JSON.parse(r.tags) as string[];
-    for (const t of arr) set.add(t);
+  // Expand the JSON tag arrays server-side so the query returns one distinct
+  // lowercased tag per row, ready to sort. Falls back to JS parsing if the
+  // JSON cast ever fails so an unparseable row doesn't take the endpoint down.
+  try {
+    const { rows } = await db.query<{ tag: string }>(
+      `SELECT DISTINCT jsonb_array_elements_text(tags::jsonb) AS tag
+       FROM recipes
+       WHERE tags <> '[]'
+       ORDER BY tag ASC`,
+    );
+    return rows.map((r) => r.tag);
+  } catch {
+    const { rows } = await db.query<{ tags: string }>('SELECT tags FROM recipes');
+    const set = new Set<string>();
+    for (const r of rows) {
+      try {
+        for (const t of JSON.parse(r.tags) as string[]) set.add(t);
+      } catch {
+        // ignore malformed row
+      }
+    }
+    return [...set].sort();
   }
-  return [...set].sort();
 }
 
 /* ------------------------------------------------------------------ */
@@ -552,43 +591,71 @@ export async function cookRecipe(
   const dryRun = options.dry_run ?? false;
 
   return tx(db as Pool, async (client) => {
-    const matched = await matchRecipe(client, recipeId);
-    const toConsume = matched.ingredients.filter((i) => !(skipOptional && i.optional));
-    for (const ing of toConsume) {
-      if (ing.status === 'missing' || ing.status === 'unit_mismatch') {
-        throw semantic(
-          `cannot cook: ingredient "${ing.type_name ?? ing.item_type_id}" is ${ing.status}`,
-          { ingredients: [`${ing.item_type_id}: ${ing.status}`] },
-        );
-      }
-      if (ing.status === 'short') {
-        throw semantic(
-          `cannot cook: ingredient "${ing.type_name ?? ing.item_type_id}" is short by ${ing.shortfall}`,
-          { ingredients: [`${ing.item_type_id}: short`] },
-        );
-      }
+    const recipe = await getRecipe(client, recipeId);
+    const ingredients = await listIngredients(client, recipeId);
+    const toConsume = ingredients.filter((i) => !(skipOptional && i.optional));
+    if (toConsume.length === 0) {
+      return { recipe_id: recipe.id, dry_run: dryRun, decrements: [], quantity_change_ids: [] };
+    }
+
+    // Lock every candidate inventory row inside this transaction in a
+    // deterministic order (by id) so concurrent cooks cannot deadlock and so
+    // planning sees the exact same quantities that apply will write against.
+    const pairKeys = new Set<string>();
+    const pairs: Array<[string, string]> = [];
+    for (const i of toConsume) {
+      const key = `${i.item_type_id}|${i.required_unit}`;
+      if (pairKeys.has(key)) continue;
+      pairKeys.add(key);
+      pairs.push([i.item_type_id, i.required_unit]);
+    }
+
+    const p = pgParams();
+    const pairClauses = pairs
+      .map(([t, u]) => `(items.item_type_id = ${p.add(t)} AND items.unit = ${p.add(u)})`)
+      .join(' OR ');
+
+    const { rows: lockedRows } = await client.query<ItemPickRow & { item_type_id: string }>(
+      `SELECT id, name, item_type_id, quantity, unit, expiration_date, updated_at
+       FROM items
+       WHERE (${pairClauses}) AND quantity > 0
+       ORDER BY id ASC
+       FOR UPDATE`,
+      p.values(),
+    );
+
+    // Group locked rows by (item_type_id, unit); sort each group by the cook
+    // priority (soonest expiration, then oldest update).
+    const byKey = new Map<string, Array<ItemPickRow & { item_type_id: string }>>();
+    for (const row of lockedRows) {
+      if (Number(row.quantity) <= 0) continue;
+      const key = `${row.item_type_id}|${row.unit}`;
+      const list = byKey.get(key) ?? [];
+      list.push(row);
+      byKey.set(key, list);
+    }
+    for (const list of byKey.values()) {
+      list.sort((a, b) => {
+        const aHas = a.expiration_date != null ? 0 : 1;
+        const bHas = b.expiration_date != null ? 0 : 1;
+        if (aHas !== bHas) return aHas - bHas;
+        if (a.expiration_date && b.expiration_date && a.expiration_date !== b.expiration_date) {
+          return a.expiration_date < b.expiration_date ? -1 : 1;
+        }
+        if (a.updated_at !== b.updated_at) return a.updated_at < b.updated_at ? -1 : 1;
+        return a.id < b.id ? -1 : 1;
+      });
     }
 
     const plan: RecipeCookPlanStep[] = [];
-    const changeIds: string[] = [];
-
     for (const ing of toConsume) {
+      const candidates = byKey.get(`${ing.item_type_id}|${ing.required_unit}`) ?? [];
       let remaining = ing.required_quantity;
-      const { rows: itemRows } = await client.query<ItemPickRow>(
-        `SELECT id, name, quantity, unit, expiration_date, updated_at
-         FROM items
-         WHERE item_type_id = $1 AND unit = $2 AND quantity > 0
-         ORDER BY
-           CASE WHEN expiration_date IS NULL THEN 1 ELSE 0 END,
-           expiration_date ASC,
-           updated_at ASC,
-           id ASC`,
-        [ing.item_type_id, ing.required_unit],
-      );
-      for (const row of itemRows) {
+      for (const row of candidates) {
         if (remaining <= 0) break;
-        const take = Math.min(Number(row.quantity), remaining);
-        if (take <= 0) continue;
+        const available = Number(row.quantity);
+        if (available <= 0) continue;
+        const take = Math.min(available, remaining);
         plan.push({
           item_id: row.id,
           item_name: row.name,
@@ -596,71 +663,67 @@ export async function cookRecipe(
           decrement: take,
           unit: row.unit,
         });
+        row.quantity = available - take; // mutate so another ingredient sharing this row sees the reduced value
         remaining -= take;
       }
       if (remaining > 1e-9) {
-        // Shouldn't happen if we classified correctly.
+        // Inventory is insufficient (missing, unit_mismatch, or short). Report
+        // against the already-fetched totals so the message is helpful.
         throw semantic(
-          `cannot cook: not enough inventory to satisfy ${ing.type_name ?? ing.item_type_id}`,
-          { ingredients: [`${ing.item_type_id}: insufficient`] },
+          `cannot cook: not enough inventory to satisfy "${ing.item_type_id}"`,
+          { ingredients: [`${ing.item_type_id}: insufficient (short by ${remaining})`] },
         );
       }
     }
 
     if (dryRun) {
-      return {
-        recipe_id: recipeId,
-        dry_run: true,
-        decrements: plan,
-        quantity_change_ids: [],
-      };
+      return { recipe_id: recipe.id, dry_run: true, decrements: plan, quantity_change_ids: [] };
     }
 
     const now = clock.nowIso();
+    // Aggregate per-item decrements so we make at most one UPDATE + one
+    // QuantityChange per item even when multiple ingredients draw from it.
+    const perItem = new Map<string, number>();
     for (const step of plan) {
+      perItem.set(step.item_id, (perItem.get(step.item_id) ?? 0) + step.decrement);
+    }
+
+    const changeIds: string[] = [];
+    for (const [itemId, totalDecrement] of perItem) {
+      // We already hold FOR UPDATE locks on these rows; this read is safe.
       const { rows } = await client.query<{ quantity: number }>(
-        'SELECT quantity FROM items WHERE id = $1 FOR UPDATE',
-        [step.item_id],
+        'SELECT quantity FROM items WHERE id = $1',
+        [itemId],
       );
       if (rows.length === 0) {
-        throw semantic('inventory row disappeared during cook', {
-          item_id: [step.item_id],
-        });
+        throw semantic('inventory row disappeared during cook', { item_id: [itemId] });
       }
-      const current = Number(rows[0]!.quantity);
-      const newQty = current - step.decrement;
+      const newQty = Number(rows[0]!.quantity) - totalDecrement;
       if (newQty < 0) {
-        throw semantic('cook would make quantity negative', {
-          item_id: [step.item_id],
-        });
+        throw semantic('cook would make quantity negative', { item_id: [itemId] });
       }
       await client.query('UPDATE items SET quantity = $1, updated_at = $2 WHERE id = $3', [
         newQty,
         now,
-        step.item_id,
+        itemId,
       ]);
       const changeId = ulid();
       await client.query(
         `INSERT INTO quantity_changes (id, item_id, delta, new_quantity, reason, created_at)
          VALUES ($1,$2,$3,$4,$5,$6)`,
-        [changeId, step.item_id, -step.decrement, newQty, 'recipe_cooked', now],
+        [changeId, itemId, -totalDecrement, newQty, 'recipe_cooked', now],
       );
       await client.query(
         `DELETE FROM quantity_changes
          WHERE item_id = $1 AND id NOT IN (
            SELECT id FROM quantity_changes WHERE item_id = $2 ORDER BY created_at DESC LIMIT $3
          )`,
-        [step.item_id, step.item_id, config.quantityChangeRetention],
+        [itemId, itemId, config.quantityChangeRetention],
       );
       changeIds.push(changeId);
     }
 
-    return {
-      recipe_id: recipeId,
-      dry_run: false,
-      decrements: plan,
-      quantity_change_ids: changeIds,
-    };
+    return { recipe_id: recipe.id, dry_run: false, decrements: plan, quantity_change_ids: changeIds };
   });
 }
 

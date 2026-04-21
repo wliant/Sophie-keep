@@ -70,6 +70,23 @@ async function fetchParentId(db: Db, id: string): Promise<string | null> {
   return rows[0]!.parent_id;
 }
 
+async function isDescendantOf(
+  db: Db,
+  ancestorId: string,
+  candidateId: string,
+): Promise<boolean> {
+  if (ancestorId === candidateId) return true;
+  const visited = new Set<string>();
+  let cursor: string | null = candidateId;
+  while (cursor !== null) {
+    if (cursor === ancestorId) return true;
+    if (visited.has(cursor) || visited.size > MAX_HIERARCHY_DEPTH + 1) return false;
+    visited.add(cursor);
+    cursor = await fetchParentId(db, cursor);
+  }
+  return false;
+}
+
 async function assertParentUsable(
   db: Db,
   parentId: string | null | undefined,
@@ -171,14 +188,26 @@ export async function patchType(db: Db, id: string, patch: ItemTypePatch): Promi
 
 export async function deleteType(db: Db, id: string): Promise<void> {
   const t = await getType(db, id);
-  if ((t.item_count ?? 0) > 0) throw conflictReferenced('item_type', t.item_count);
-  if ((t.children_count ?? 0) > 0) throw conflictReferenced('item_type', t.children_count);
+  if ((t.item_count ?? 0) > 0) {
+    throw conflictReferenced('item_type', t.item_count, {
+      referenced_by: [`items:${t.item_count}`],
+    });
+  }
+  if ((t.children_count ?? 0) > 0) {
+    throw conflictReferenced('item_type', t.children_count, {
+      referenced_by: [`child_types:${t.children_count}`],
+    });
+  }
   const { rows: recipeRefRows } = await db.query<{ c: string | number }>(
     'SELECT COUNT(*) AS c FROM recipe_ingredients WHERE item_type_id = $1',
     [id],
   );
   const recipeRefs = Number(recipeRefRows[0]?.c ?? 0);
-  if (recipeRefs > 0) throw conflictReferenced('item_type', recipeRefs);
+  if (recipeRefs > 0) {
+    throw conflictReferenced('item_type', recipeRefs, {
+      referenced_by: [`recipe_ingredients:${recipeRefs}`],
+    });
+  }
   await db.query('DELETE FROM item_types WHERE id = $1', [id]);
 }
 
@@ -186,6 +215,14 @@ export async function mergeType(db: Db, sourceId: string, targetId: string): Pro
   if (sourceId === targetId) throw notFound('item_type');
   const source = await getType(db, sourceId);
   const target = await getType(db, targetId);
+  // Reparenting source's children onto target would create a cycle if target
+  // sits somewhere under source in the tree (A -> X -> Y -> target, merging A
+  // into target yields target -> Y -> X -> target).
+  if (await isDescendantOf(db, source.id, target.id)) {
+    throw semantic('cannot merge: target is a descendant of source', {
+      target_id: ['would create cycle'],
+    });
+  }
   await tx(db as Pool, async (client) => {
     const now = clock.nowIso();
     await client.query('UPDATE items SET item_type_id = $1, updated_at = $2 WHERE item_type_id = $3', [
@@ -211,5 +248,6 @@ export async function mergeType(db: Db, sourceId: string, targetId: string): Pro
 
 export const _internal = {
   assertParentUsable,
+  isDescendantOf,
   MAX_HIERARCHY_DEPTH,
 };

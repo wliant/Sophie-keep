@@ -20,13 +20,10 @@ import { cleanupPhotoKeys } from '../services/photo-service.js';
 import { parseId } from '../util/params.js';
 
 export async function recipesRoutes(app: FastifyInstance): Promise<void> {
+  // Collection-level routes
   app.get('/api/v1/recipes', async (req) => {
     const q = recipeSearchQueryZ.parse(req.query);
     return listRecipes(getPool(), q);
-  });
-
-  app.get('/api/v1/recipes/tags', async () => {
-    return { items: await listAllTags(getPool()) };
   });
 
   app.post('/api/v1/recipes', async (req, reply) => {
@@ -36,6 +33,13 @@ export async function recipesRoutes(app: FastifyInstance): Promise<void> {
     return getRecipeDetail(getPool(), recipe.id);
   });
 
+  // Static sub-routes must be declared before `/:id` routes so Fastify's
+  // radix-tree router matches them correctly.
+  app.get('/api/v1/recipes/tags', async () => {
+    return { items: await listAllTags(getPool()) };
+  });
+
+  // Single-recipe routes
   app.get('/api/v1/recipes/:id', async (req) => {
     const id = parseId(req.params);
     return getRecipeDetail(getPool(), id);

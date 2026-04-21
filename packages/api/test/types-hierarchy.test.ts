@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { _internal } from '../src/services/types-service.js';
 
 // Minimal fake Db that serves item_types.parent_id lookups from an in-memory
-// map. Only the single query used by assertParentUsable is supported.
+// map. Only the single query used by assertParentUsable/isDescendantOf is
+// supported; unknown ids return an empty row set (which callers treat as
+// "item_type not found").
 function fakeDb(parents: Record<string, string | null>): Parameters<typeof _internal.assertParentUsable>[0] {
   return {
     async query(_sql: string, params: unknown[]) {
@@ -49,5 +51,34 @@ describe('assertParentUsable', () => {
     await expect(_internal.assertParentUsable(db, 'l9', null)).rejects.toMatchObject({
       code: 'SEMANTIC_ERROR',
     });
+  });
+});
+
+describe('isDescendantOf', () => {
+  it('returns true when the candidate is the ancestor itself', async () => {
+    const db = fakeDb({ a: null });
+    expect(await _internal.isDescendantOf(db, 'a', 'a')).toBe(true);
+  });
+
+  it('returns true when the candidate is a direct child', async () => {
+    const db = fakeDb({ a: null, b: 'a' });
+    expect(await _internal.isDescendantOf(db, 'a', 'b')).toBe(true);
+  });
+
+  it('returns true for a multi-level descendant', async () => {
+    // a -> b -> c -> d
+    const db = fakeDb({ a: null, b: 'a', c: 'b', d: 'c' });
+    expect(await _internal.isDescendantOf(db, 'a', 'd')).toBe(true);
+  });
+
+  it('returns false when the candidate is unrelated', async () => {
+    const db = fakeDb({ a: null, b: null, c: 'b' });
+    expect(await _internal.isDescendantOf(db, 'a', 'c')).toBe(false);
+  });
+
+  it('returns false when the candidate is an ancestor of the queried id', async () => {
+    const db = fakeDb({ a: null, b: 'a' });
+    // mergeType: prevents cycle when asked "is target a descendant of source?"
+    expect(await _internal.isDescendantOf(db, 'b', 'a')).toBe(false);
   });
 });

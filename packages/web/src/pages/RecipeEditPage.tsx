@@ -137,12 +137,37 @@ export function RecipeEditPage() {
     );
   };
 
+  const errorEntries = Object.entries(errors);
+
+  function ingredientError(idx: number): string | null {
+    const messages: string[] = [];
+    for (const [key, msgs] of errorEntries) {
+      if (key === `ingredients.${idx}` || key.startsWith(`ingredients.${idx}.`)) {
+        messages.push(...msgs);
+      }
+    }
+    return messages.length ? messages.join(' · ') : null;
+  }
+
   return (
     <div className="stack">
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>{isNew ? 'New recipe' : 'Edit recipe'}</h2>
         <Link to={isNew ? '/recipes' : `/recipes/${id}`}>Cancel</Link>
       </div>
+
+      {errorEntries.length > 0 ? (
+        <div className="card" role="alert" style={{ borderColor: 'var(--danger)' }}>
+          <strong>Please fix the following:</strong>
+          <ul style={{ margin: '0.5rem 0 0 1.25rem' }}>
+            {errorEntries.map(([key, msgs]) => (
+              <li key={key}>
+                <code style={{ fontSize: '0.85rem' }}>{key}</code>: {msgs.join(' · ')}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <section className="card stack">
         <div className="form-field">
@@ -291,6 +316,11 @@ export function RecipeEditPage() {
               >
                 Remove
               </button>
+              {ingredientError(idx) ? (
+                <small className="error" style={{ flexBasis: '100%' }}>
+                  {ingredientError(idx)}
+                </small>
+              ) : null}
             </div>
           );
         })}
