@@ -1,0 +1,1 @@
+ALTER TABLE floor_plan ADD COLUMN doors TEXT NOT NULL DEFAULT '[]';
