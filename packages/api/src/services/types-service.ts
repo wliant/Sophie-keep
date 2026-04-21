@@ -106,6 +106,12 @@ export async function patchType(db: Db, id: string, patch: ItemTypePatch): Promi
 export async function deleteType(db: Db, id: string): Promise<void> {
   const t = await getType(db, id);
   if ((t.item_count ?? 0) > 0) throw conflictReferenced('item_type', t.item_count);
+  const { rows: recipeRefRows } = await db.query<{ c: string | number }>(
+    'SELECT COUNT(*) AS c FROM recipe_ingredients WHERE item_type_id = $1',
+    [id],
+  );
+  const recipeRefs = Number(recipeRefRows[0]?.c ?? 0);
+  if (recipeRefs > 0) throw conflictReferenced('item_type', recipeRefs);
   await db.query('DELETE FROM item_types WHERE id = $1', [id]);
 }
 

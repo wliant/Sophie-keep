@@ -8,6 +8,12 @@ import type {
   PaginatedResponse,
   Photo,
   QuantityChange,
+  Recipe,
+  RecipeCookResult,
+  RecipeDetail,
+  RecipeIngredientWithStatus,
+  RecipeMatchStatus,
+  RecipeWithDerived,
   Room,
   Settings,
   ShoppingListAutoEntry,
@@ -64,7 +70,17 @@ export const qk = {
   backups: ['backups'] as const,
   backupStatus: ['backup-status'] as const,
   health: ['health'] as const,
+  recipes: (query?: Record<string, unknown>) => ['recipes', query ?? {}] as const,
+  recipe: (id: string) => ['recipes', id] as const,
+  recipeTags: ['recipe-tags'] as const,
 };
+
+export interface RecipeMatchResponse {
+  recipe_id: string;
+  match_status: RecipeMatchStatus;
+  ingredients: RecipeIngredientWithStatus[];
+  counts: { ok: number; short: number; missing: number; unit_mismatch: number };
+}
 
 export const endpoints = {
   // Items
@@ -177,4 +193,19 @@ export const endpoints = {
 
   // Health
   health: () => api.get<HealthResponse>('/api/v1/health'),
+
+  // Recipes
+  listRecipes: (query: Record<string, unknown> = {}) =>
+    api.get<PaginatedResponse<RecipeWithDerived>>('/api/v1/recipes', query),
+  getRecipe: (id: string) => api.get<RecipeDetail>(`/api/v1/recipes/${id}`),
+  createRecipe: (body: Record<string, unknown>) =>
+    api.post<RecipeDetail>('/api/v1/recipes', body),
+  patchRecipe: (id: string, body: Record<string, unknown>) =>
+    api.patch<RecipeDetail>(`/api/v1/recipes/${id}`, body),
+  deleteRecipe: (id: string) => api.del<void>(`/api/v1/recipes/${id}`),
+  matchRecipe: (id: string) =>
+    api.get<RecipeMatchResponse>(`/api/v1/recipes/${id}/match`),
+  cookRecipe: (id: string, body: { skip_optional?: boolean; dry_run?: boolean } = {}) =>
+    api.post<RecipeCookResult>(`/api/v1/recipes/${id}/cook`, body),
+  listRecipeTags: () => api.get<{ items: string[] }>('/api/v1/recipes/tags'),
 };

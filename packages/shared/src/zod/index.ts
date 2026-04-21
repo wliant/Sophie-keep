@@ -56,7 +56,9 @@ export const itemPatchZ = z
 export const quantityOpZ = z.object({
   op: z.enum(['increment', 'decrement', 'set']),
   amount: z.number().finite(),
-  reason: z.enum(['manual', 'quick_add', 'shopping_restock', 'import']).optional(),
+  reason: z
+    .enum(['manual', 'quick_add', 'shopping_restock', 'import', 'recipe_cooked'])
+    .optional(),
 });
 
 export const itemTypeCreateZ = z.object({
@@ -188,6 +190,69 @@ export const autocompleteQueryZ = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional(),
 });
 
+const RECIPE_STEP = z.string().trim().min(1).max(2000);
+const RECIPE_TAG = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(40)
+  .regex(/^[a-z0-9][a-z0-9 _-]*$/, 'tag must be lowercase letters, digits, spaces, - or _');
+
+export const recipeIngredientCreateZ = z.object({
+  item_type_id: ID,
+  required_quantity: POS,
+  required_unit: UNIT,
+  optional: z.boolean().optional(),
+  note: z.string().trim().max(200).nullable().optional(),
+});
+
+export const recipeCreateZ = z.object({
+  name: NAME_120,
+  description: z.string().max(2000).nullable().optional(),
+  steps: z.array(RECIPE_STEP).max(50).optional(),
+  tags: z.array(RECIPE_TAG).max(20).optional(),
+  servings: POS.nullable().optional(),
+  prep_minutes: z.number().int().min(0).nullable().optional(),
+  cook_minutes: z.number().int().min(0).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  photo_ids: z.array(ID).max(10).optional(),
+  ingredients: z.array(recipeIngredientCreateZ).max(60),
+});
+
+export const recipePatchZ = z
+  .object({
+    name: NAME_120.optional(),
+    description: z.string().max(2000).nullable().optional(),
+    steps: z.array(RECIPE_STEP).max(50).optional(),
+    tags: z.array(RECIPE_TAG).max(20).optional(),
+    servings: POS.nullable().optional(),
+    prep_minutes: z.number().int().min(0).nullable().optional(),
+    cook_minutes: z.number().int().min(0).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    photo_ids: z.array(ID).max(10).optional(),
+    ingredients: z.array(recipeIngredientCreateZ).max(60).optional(),
+    base_updated_at: z.string().optional(),
+  })
+  .strict();
+
+export const recipeSearchQueryZ = z.object({
+  q: z.string().optional(),
+  tag: z.string().optional(),
+  match_status: z.enum(['makeable', 'partial', 'missing']).optional(),
+  makeable: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+  sort: z.enum(['name_asc', 'name_desc', 'updated_desc', 'match']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  page_size: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+export const recipeCookZ = z
+  .object({
+    skip_optional: z.boolean().optional(),
+    dry_run: z.boolean().optional(),
+  })
+  .strict();
+
 export const restoreConfirmZ = z.object({
   confirm: z.literal('REPLACE ALL DATA'),
 });
@@ -209,3 +274,8 @@ export type RestockConfirm = z.infer<typeof restockConfirmZ>;
 export type SettingsPatch = z.infer<typeof settingsPatchZ>;
 export type QuantityOp = z.infer<typeof quantityOpZ>;
 export type ItemSearchQuery = z.infer<typeof itemSearchQueryZ>;
+export type RecipeCreate = z.infer<typeof recipeCreateZ>;
+export type RecipePatch = z.infer<typeof recipePatchZ>;
+export type RecipeIngredientCreate = z.infer<typeof recipeIngredientCreateZ>;
+export type RecipeSearchQuery = z.infer<typeof recipeSearchQueryZ>;
+export type RecipeCookOptions = z.infer<typeof recipeCookZ>;

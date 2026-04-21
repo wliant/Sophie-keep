@@ -29,6 +29,8 @@ const TABLES = [
   'photos',
   'quantity_changes',
   'shopping_entries',
+  'recipes',
+  'recipe_ingredients',
 ];
 
 function writeTarEntry(pack: tar.Pack, name: string, buf: Buffer): Promise<void> {
