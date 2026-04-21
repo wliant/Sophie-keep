@@ -1,0 +1,2 @@
+FROM sophie-keep:test
+COPY --chown=sophie:sophie packages/web/dist /app/packages/web/dist
