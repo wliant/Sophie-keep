@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import type { ItemType, ItemWithDerived, PaginatedResponse, StorageLocation } from '@sophie/shared';
 import { endpoints, qk } from '../api/endpoints';
+import { flattenTypes } from '../api/itemTypeHierarchy';
 import { ItemRow } from '../components/ItemRow';
 
 const SORT_OPTIONS: Array<{ value: string; label: string }> = [
@@ -65,9 +66,9 @@ export function InventoryListPage() {
             onChange={(e) => setParam('item_type_id', e.target.value || null)}
           >
             <option value="">All types</option>
-            {types.data?.items.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
+            {flattenTypes(types.data?.items ?? []).map((o) => (
+              <option key={o.type.id} value={o.type.id}>
+                {o.label}
               </option>
             ))}
           </select>

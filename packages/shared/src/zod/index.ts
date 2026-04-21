@@ -63,6 +63,7 @@ export const quantityOpZ = z.object({
 
 export const itemTypeCreateZ = z.object({
   name: NAME_60,
+  parent_id: ID.nullable().optional(),
   default_unit: UNIT,
   default_low_stock_threshold: NON_NEG.nullable().optional(),
   icon: z.string().max(32).regex(/^[^<>]*$/).nullable().optional(),

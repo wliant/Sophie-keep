@@ -6,6 +6,7 @@ import {
   qk,
   type AutocompleteMatch,
 } from '../api/endpoints';
+import { flattenTypes } from '../api/itemTypeHierarchy';
 import type { ItemType, Settings, StorageLocation } from '@sophie/shared';
 import { toast } from '../state/toast';
 
@@ -165,9 +166,9 @@ export function QuickAddModal({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setTypeId(e.target.value || null)}
               >
                 <option value="">Select a type…</option>
-                {types.data?.items.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
+                {flattenTypes(types.data?.items ?? []).map((o) => (
+                  <option key={o.type.id} value={o.type.id}>
+                    {o.label}
                   </option>
                 ))}
               </select>

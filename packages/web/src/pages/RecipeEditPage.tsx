@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ItemType, RecipeDetail } from '@sophie/shared';
 import { ApiError } from '../api/client';
 import { endpoints, qk } from '../api/endpoints';
+import { flattenTypes } from '../api/itemTypeHierarchy';
 import { toast } from '../state/toast';
 
 interface IngredientDraft {
@@ -79,6 +80,7 @@ export function RecipeEditPage() {
   }, [existing.data, isNew]);
 
   const typeById = new Map((types.data?.items ?? []).map((t) => [t.id, t]));
+  const typeOptions = flattenTypes(types.data?.items ?? []);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -231,9 +233,9 @@ export function RecipeEditPage() {
                   }}
                 >
                   <option value="">Select…</option>
-                  {(types.data?.items ?? []).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
+                  {typeOptions.map((o) => (
+                    <option key={o.type.id} value={o.type.id}>
+                      {o.label}
                     </option>
                   ))}
                 </select>

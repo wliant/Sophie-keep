@@ -46,6 +46,7 @@ export interface ItemWithDerived extends Item {
 export interface ItemType {
   id: string;
   name: string;
+  parent_id: string | null;
   default_unit: string;
   default_low_stock_threshold: number | null;
   icon: string | null;
@@ -53,6 +54,8 @@ export interface ItemType {
   created_at: string;
   updated_at: string;
   item_count?: number;
+  children_count?: number;
+  parent_name?: string | null;
 }
 
 export interface Room {
