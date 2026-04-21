@@ -58,7 +58,7 @@ export function FloorPlanPage() {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const uploadBg = useMutation({
-    mutationFn: async (files: FileList) => {
+    mutationFn: async (files: File[]) => {
       const { items } = await endpoints.uploadPhotos('floor_plan', 'singleton', files);
       const photo = items[0];
       if (!photo) throw new Error('Upload failed');
@@ -300,7 +300,7 @@ export function FloorPlanPage() {
         type="file"
         accept="image/jpeg,image/png,image/webp"
         style={{ display: 'none' }}
-        onChange={(e) => { if (e.target.files?.length) uploadBg.mutate(e.target.files); e.target.value = ''; }}
+        onChange={(e) => { if (e.target.files?.length) uploadBg.mutate(Array.from(e.target.files)); e.target.value = ''; }}
       />
 
       {mode === 'edit' && (

@@ -182,7 +182,7 @@ export const endpoints = {
   backupDownloadUrl: (id: string) => `/api/v1/backups/${id}/download`,
 
   // Photos
-  uploadPhotos: (ownerKind: 'item' | 'floor_plan', ownerId: string, files: FileList) => {
+  uploadPhotos: (ownerKind: 'item' | 'floor_plan', ownerId: string, files: File[] | FileList) => {
     const form = new FormData();
     form.set('owner_kind', ownerKind);
     form.set('owner_id', ownerId);

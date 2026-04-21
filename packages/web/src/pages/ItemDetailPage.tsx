@@ -64,7 +64,7 @@ export function ItemDetailPage() {
   });
 
   const upload = useMutation({
-    mutationFn: (files: FileList) => endpoints.uploadPhotos('item', id, files),
+    mutationFn: (files: File[]) => endpoints.uploadPhotos('item', id, files),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.item(id) });
       invalidateItems();
@@ -278,7 +278,9 @@ export function ItemDetailPage() {
             multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              if (e.target.files && e.target.files.length) upload.mutate(e.target.files);
+              if (e.target.files && e.target.files.length) {
+                upload.mutate(Array.from(e.target.files));
+              }
               e.target.value = '';
             }}
           />
