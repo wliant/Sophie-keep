@@ -17,7 +17,7 @@ A picture disambiguates items ("which box of tea is this?") and helps when shopp
 - **FR-PHOTOS-002**: Accepted MIME types: `image/jpeg`, `image/png`, `image/webp`. Requests with any other MIME type must be rejected.
 - **FR-PHOTOS-003**: Maximum file size per photo: **10 MB**. Over-size uploads must be rejected with a specific error code (see `../09-validation-and-errors.md`).
 - **FR-PHOTOS-004**: The system must generate and store a thumbnail (≤ 512 px on the longest side) alongside the original. Thumbnails are derived; a failure to generate must fall back to serving the original.
-- **FR-PHOTOS-005**: Photos are stored on the server's local filesystem under a dedicated photo root; the database holds only the reference metadata defined by the [Photo](../03-domain-model.md#photo) entity.
+- **FR-PHOTOS-005**: Photos are stored in an S3-compatible object store (MinIO by default); the database holds only the reference metadata defined by the [Photo](../03-domain-model.md#photo) entity. See `07-data-and-storage.md` for object key layout and configuration.
 - **FR-PHOTOS-006**: Uploads must strip EXIF metadata except for orientation (which is applied and then removed). This prevents unintended sharing of geolocation in backups.
 
 ### Display
@@ -29,7 +29,7 @@ A picture disambiguates items ("which box of tea is this?") and helps when shopp
 ### Delete
 
 - **FR-PHOTOS-020**: The system must allow deleting individual photos from an item.
-- **FR-PHOTOS-021**: Deleting an item must cascade-delete all its photos (database rows **and** files on disk, including thumbnails).
+- **FR-PHOTOS-021**: Deleting an item must cascade-delete all its photos (database rows **and** objects in the object store, including thumbnails).
 - **FR-PHOTOS-022**: A deleted photo must be removed from any backup created **after** the deletion. Existing backups retain the historical photo.
 
 ### Floor plan background

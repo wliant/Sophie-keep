@@ -6,8 +6,8 @@ Item types categorize items. They exist so users can filter inventory, supply de
 
 ## Scope
 
-- In scope: CRUD, merge, reassign-on-delete, uniqueness.
-- Out of scope: hierarchical types (deferred, `OI-004`); automatic classification from item name.
+- In scope: CRUD, merge, reassign-on-delete, uniqueness, hierarchical types (parent/child, implemented — `OI-004` resolved).
+- Out of scope: automatic classification from item name.
 
 ## Requirements
 
@@ -19,6 +19,11 @@ Item types categorize items. They exist so users can filter inventory, supply de
 - **FR-TYPES-006**: The system must provide a **merge** operation: given types `A` and `B`, move every item currently of type `A` to type `B`, then delete `A`. The merge is atomic — if any referential check fails, nothing changes.
 - **FR-TYPES-007**: The system must list all item types with counts of referenced items, sorted by name by default.
 - **FR-TYPES-008**: Changes to `default_unit` or `default_low_stock_threshold` must **not** retroactively modify existing items' stored fields; they only affect new items and the computed fallback for items whose `low_stock_threshold` is null.
+- **FR-TYPES-009**: Creating or updating a type may set `parent_id` to the `id` of an existing type. Setting `parent_id = null` makes the type a root type.
+- **FR-TYPES-010**: The system must reject any `parent_id` value that would create a cycle (a type cannot be its own ancestor).
+- **FR-TYPES-011**: The hierarchy depth must not exceed 10 levels. Attempts to create or reparent a type that would violate this limit must return a validation error.
+- **FR-TYPES-012**: The list endpoint must return `parent_id`, `parent_name` (when non-null), and `children_count` for each type.
+- **FR-TYPES-013**: Deleting a type that has child types is **blocked** unless all children are first reassigned or reparented to a different parent.
 
 ## UX Notes
 
@@ -39,7 +44,10 @@ Item types categorize items. They exist so users can filter inventory, supply de
 - **AC-TYPES-003**: **Given** a type "Spice" has 5 referencing items, **when** a user tries to delete it, **then** deletion is blocked and the error message states "5 items reference this type".
 - **AC-TYPES-004**: **Given** types "Spice" (3 items) and "Seasoning" (2 items), **when** a user merges "Spice" into "Seasoning", **then** "Spice" is deleted and "Seasoning" has 5 items.
 - **AC-TYPES-005**: **Given** a type whose `default_unit` is `g`, **when** the default is changed to `kg`, **then** existing items of that type keep their original stored unit.
+- **AC-TYPES-006**: **Given** a type "Food" exists, **when** a user creates "Spice" with `parent_id` = "Food"'s id, **then** "Spice" appears in the list with `parent_name = "Food"`.
+- **AC-TYPES-007**: **Given** a type "Spice" has a child "Ground spice", **when** a user tries to delete "Spice", **then** deletion is blocked and the error states that children must be reassigned first.
+- **AC-TYPES-008**: **Given** types A → B → C (chain of 3), **when** a user attempts to set A's `parent_id` to C (creating a cycle), **then** the request is rejected with a cycle-detection error.
 
 ## Open Questions
 
-- `OI-004`: Nested / hierarchical types (e.g., Food → Spice). Deferred.
+- `OI-004`: Resolved — hierarchical types implemented. See FR-TYPES-009–013 and `03-domain-model.md#itemtype`.

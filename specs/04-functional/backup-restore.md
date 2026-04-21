@@ -60,4 +60,4 @@ Household data is hard to replace. A dropped phone is fine; a corrupted database
 ## Open Questions
 
 - `OI-015`: Whether to offer backup encryption. v1: no. Parked.
-- `OI-016`: Off-site backup destinations (S3, Backblaze, etc.). Deferred.
+- `OI-016`: Resolved — MinIO (S3-compatible) object store now used for photo storage. Off-site push of the backup archive itself remains out of scope for v1 (see `12-future-and-out-of-scope.md`).

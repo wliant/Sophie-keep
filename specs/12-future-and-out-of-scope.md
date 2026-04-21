@@ -12,7 +12,6 @@ These items are explicitly **not** in v1. Listing them here keeps v1 focused and
 - **Barcode / UPC scanning.**
 - **Image recognition or auto-tagging.**
 - **Unit conversion.**
-- **Recipe and meal-planning integration.**
 - **Shopping-service integrations** (Instacart, Amazon Fresh, etc.).
 - **Price tracking / budgeting.**
 - **Per-user profiles and activity history.**
@@ -26,13 +25,11 @@ These are natural extensions once v1 is stable. Each is linked to the open-issue
 - **Per-device or passphrase auth** (OI-001).
 - **Unit conversion and a structured unit model** (OI-002).
 - **Multi-floor / multi-plan households** (OI-003).
-- **Hierarchical item types** (OI-004).
 - **Fuzzy search** (OI-011).
 - **Barcode scanning** with on-device lookup tables (requires design of an item-database ingestion pipeline).
-- **Off-site backups** with opt-in encryption (OI-015, OI-016).
+- **Off-site backups** with opt-in encryption (OI-015).
 - **Native iOS/Android app** sharing the web client's API.
 - **Email/Matrix/Slack notifications** (would break the "no external services" posture — revisit then).
-- **Meal-planning** that consumes inventory (OI-018).
 
 ## How to promote a future item into v2
 

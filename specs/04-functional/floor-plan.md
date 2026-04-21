@@ -6,7 +6,7 @@ The floor plan is the visual, spatial way to navigate inventory. Rather than a f
 
 ## Scope
 
-- In scope: viewing the plan, navigating by tapping a location, and editing the plan (rooms, locations, labels, background image).
+- In scope: viewing the plan, navigating by tapping a location, and editing the plan (rooms, locations, labels, background image, door placement).
 - Out of scope: multi-floor plans (deferred, `OI-003`); version history of the plan; collaborative real-time editing.
 
 ## Requirements
@@ -43,6 +43,12 @@ The floor plan is the visual, spatial way to navigate inventory. Rather than a f
   Violations must be reported inline with the offending shape highlighted.
 - **FR-PLAN-015**: The system must allow uploading a **background image** for the plan (e.g., a scanned blueprint). The background is a reference only — shapes are still explicit `shape_on_plan` values.
 - **FR-PLAN-016**: The system must allow setting the plan's logical `width` and `height`. Changing these must not cause any existing shape to fall outside the new bounds; if any would, the save is rejected.
+
+### Doors
+
+- **FR-PLAN-017**: In edit mode, users must be able to add, move, and remove doors. A door belongs to exactly one room and sits on one of that room's four walls.
+- **FR-PLAN-018**: A door is defined by its `room_id`, `wall` (`north` | `south` | `east` | `west`), normalised position `t ∈ [0, 1]` along the wall, and `width` in logical units. The door must fit within the wall — i.e., the implied segment must not exceed the room boundary.
+- **FR-PLAN-019**: Doors are saved as part of the floor-plan edit session and are included in the `GET /api/v1/floor-plan` response under `doors[]`.
 
 ### Concurrency
 

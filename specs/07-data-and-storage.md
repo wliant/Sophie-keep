@@ -19,7 +19,7 @@ Backups encompass both domains in a single consistent snapshot (see `04-function
   - `Room.name`
   - `(StorageLocation.room_id, StorageLocation.name)`
 - **FR-DATA-003**: The database must support text search fast enough to meet `NFR-PERF-001`. If the chosen engine's default text search cannot meet the target, an auxiliary search index (e.g., FTS extension, inverted index) must be added.
-- **FR-DATA-004**: The database must be **embeddable or filesystem-local** to preserve the privacy and LAN-only constraints in `05-non-functional.md`. Remote managed DB services are disallowed by default.
+- **FR-DATA-004**: The database must be **self-hostable** — a server process running in the same Docker Compose stack is acceptable. Externally managed cloud DB services are disallowed. (PostgreSQL running in Docker satisfies this requirement.)
 - **FR-DATA-005**: Schema migrations must run on app startup and be idempotent.
 
 ## Required indexes
@@ -46,19 +46,18 @@ The following logical indexes exist to meet performance targets. Implementations
 
 ## Photo storage layout
 
-- **FR-DATA-020**: Photos are stored on the server's local filesystem under a dedicated root, configurable in server config.
-- **FR-DATA-021**: Directory layout must be stable and deterministic. Recommended layout:
+- **FR-DATA-020**: Photos are stored in an S3-compatible object store (MinIO by default). The bucket name, endpoint, and credentials are configurable via environment variables.
+- **FR-DATA-021**: Object key layout must be stable and deterministic:
 
 ```
-<photo_root>/
-  items/<first-2-of-photo-id>/<photo-id>/original.<ext>
-  items/<first-2-of-photo-id>/<photo-id>/thumb.webp
-  floor_plan/<photo-id>/original.<ext>
-  floor_plan/<photo-id>/thumb.webp
+photos/items/<first-2-of-photo-id>/<photo-id>/original.<ext>
+photos/items/<first-2-of-photo-id>/<photo-id>/thumb.webp
+photos/floor_plan/<photo-id>/original.<ext>
+photos/recipes/<photo-id>/original.<ext>
 ```
 
-- **FR-DATA-022**: The photo storage layout must be reproducible from the database — restoring a backup must re-create exactly this structure.
-- **FR-DATA-023**: Filesystem-level file writes and database writes must be ordered so that, after a crash, there are no orphan files (files with no DB reference) or dangling references (DB rows pointing at missing files). Recommended: write file first, then commit DB row; on startup, scan for orphans and either reconcile or move to a quarantine directory.
+- **FR-DATA-022**: The object key layout must be reproducible from the database — restoring a backup must re-populate the object store with the same keys.
+- **FR-DATA-023**: Object store writes and database writes must be ordered so that, after a crash, there are no orphan objects (objects with no DB reference) or dangling references (DB rows pointing at missing objects). Required: write object first, then commit DB row. On startup, any DB rows referencing missing objects must be flagged in the health endpoint response.
 
 ## Concurrency
 
@@ -69,7 +68,7 @@ The following logical indexes exist to meet performance targets. Implementations
 ## Durability
 
 - **FR-DATA-040**: Every state-changing API response is returned **after** the underlying transaction has been committed to durable storage.
-- **FR-DATA-041**: Photo uploads are considered durable only after the file exists on disk **and** the DB row is committed.
+- **FR-DATA-041**: Photo uploads are considered durable only after the object exists in the object store **and** the DB row is committed.
 
 ## Schema versioning
 
@@ -78,7 +77,7 @@ The following logical indexes exist to meet performance targets. Implementations
 
 ## Configuration
 
-- **FR-DATA-060**: Server configuration (bind address, photo root, backup root, backup time, expiring-soon default, DB location) must be read from a single configuration file or environment variables. No hard-coded paths.
+- **FR-DATA-060**: Server configuration (bind address, backup root, backup time, expiring-soon default, `DATABASE_URL`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) must be read from a single configuration file or environment variables. No hard-coded paths.
 
 ## Dependencies
 

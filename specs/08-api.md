@@ -88,11 +88,11 @@ Full error-code taxonomy in `09-validation-and-errors.md`.
 
 ### Item types
 
-- `GET    /api/v1/item-types` — list with reference counts.
-- `POST   /api/v1/item-types` — create.
-- `GET    /api/v1/item-types/{id}` — read.
-- `PATCH  /api/v1/item-types/{id}` — update.
-- `DELETE /api/v1/item-types/{id}` — blocked if referenced (`FR-TYPES-004`).
+- `GET    /api/v1/item-types` — list with reference counts. Each entry includes `parent_id`, `parent_name` (if non-null), and `children_count` (`FR-TYPES-012`).
+- `POST   /api/v1/item-types` — create. Accepts optional `parent_id`.
+- `GET    /api/v1/item-types/{id}` — read. Returns `parent_id`, `parent_name`, `children_count`.
+- `PATCH  /api/v1/item-types/{id}` — update. Accepts `parent_id`; returns `409` on cycle (`FR-TYPES-010`) or depth violation (`FR-TYPES-011`).
+- `DELETE /api/v1/item-types/{id}` — blocked if referenced by items (`FR-TYPES-004`) or if it has child types (`FR-TYPES-013`).
 - `POST   /api/v1/item-types/{id}/merge` — body: `{ "target_id": "…" }`. Atomic (`FR-TYPES-006`).
 
 ### Rooms
@@ -113,9 +113,9 @@ Full error-code taxonomy in `09-validation-and-errors.md`.
 
 ### Floor plan
 
-- `GET  /api/v1/floor-plan` — returns the single active plan with its dimensions and background reference.
+- `GET  /api/v1/floor-plan` — returns the single active plan with its dimensions, background reference, and `doors[]` array (`FR-PLAN-019`).
 - `PATCH /api/v1/floor-plan` — update `name`, `width`, `height`, `background_image_photo_id`.
-- `POST /api/v1/floor-plan/edit-session` — body: a batch of room/location create/update/delete operations. Server validates all (`FR-PLAN-014`) and applies atomically. On validation failure, returns `422` with per-shape error details and does not apply any change.
+- `POST /api/v1/floor-plan/edit-session` — body: a batch of room/location/door create/update/delete operations. Server validates all (`FR-PLAN-014`, `FR-PLAN-018`) and applies atomically. On validation failure, returns `422` with per-shape error details and does not apply any change.
 
 ### Shopping list
 
@@ -127,9 +127,20 @@ Full error-code taxonomy in `09-validation-and-errors.md`.
 - `POST  /api/v1/shopping-list/confirm-restock` — applies the restock per `FR-SHOP-012`. Body supplies the per-item restock amounts and expiry updates chosen in the UI. Response lists per-item outcomes.
 - `POST  /api/v1/shopping-list/clear-checked` — clears all checked states without restocking (`FR-SHOP-014`).
 
+### Recipes
+
+- `GET    /api/v1/recipes` — list with derived `match_status`. Supports `?tag=`, `?match_status=` (`makeable` | `partial` | `missing`), `?makeable=true`, `page`, `page_size`.
+- `POST   /api/v1/recipes` — create recipe and its ingredients atomically. Body includes recipe fields plus `ingredients[]`.
+- `GET    /api/v1/recipes/{id}` — detail with per-ingredient match status (`RecipeDetail`).
+- `PATCH  /api/v1/recipes/{id}` — partial update. Must include `base_updated_at` (`FR-DATA-030`). Replaces `ingredients[]` if provided.
+- `DELETE /api/v1/recipes/{id}` — cascades to ingredients and photos.
+- `GET    /api/v1/recipes/tags` — returns the distinct list of tags used across all recipes.
+- `GET    /api/v1/recipes/{id}/match` — recomputes and returns the current match status for a recipe without caching.
+- `POST   /api/v1/recipes/{id}/cook` — body: `{ "dry_run"?: boolean }`. On `dry_run: true` returns the planned decrements without writing. On `dry_run: false` (default) decrements inventory and records `recipe_cooked` quantity changes.
+
 ### Photos
 
-- `POST   /api/v1/photos` — multipart upload. Form fields: `owner_kind` (`item` | `floor_plan`), `owner_id`, one or more `file` parts. Returns new photo metadata.
+- `POST   /api/v1/photos` — multipart upload. Form fields: `owner_kind` (`item` | `floor_plan` | `recipe`), `owner_id`, one or more `file` parts. Returns new photo metadata.
 - `GET    /api/v1/photos/{id}` — returns binary; `?variant=thumb` for thumbnail.
 - `DELETE /api/v1/photos/{id}` — remove from owner; if owner is an item, also updates `photo_ids`.
 - `POST   /api/v1/items/{id}/photos/order` — body: `{ "photo_ids": [...] }`. Reorders `Item.photo_ids` (`FR-PHOTOS-012`).
